@@ -28,13 +28,9 @@ class AuthController extends Controller
             'password' => Hash::make($validated['password']),
         ]);
 
-        $token = $user->createToken('auth_token')->plainTextToken;
-
         return response()->json([
             'message' => 'User registered successfully',
             'user' => $user,
-            'access_token' => $token,
-            'token_type' => 'Bearer',
         ], 201);
     }
 
@@ -58,12 +54,17 @@ class AuthController extends Controller
 
         $token = $user->createToken('auth_token')->plainTextToken;
 
-        return response()->json([
-            'message' => 'Login successful',
-            'user' => $user,
-            'access_token' => $token,
-            'token_type' => 'Bearer',
-        ]);
+        return response()
+            ->json(['user' => $user])
+            ->cookie(
+                'access_token',
+                $token,
+                60 * 24,   // minutes
+                '/',
+                null,
+                true,     // secure (true in production HTTPS)
+                true      // httpOnly 🔒
+            );
     }
 
     /**
@@ -75,9 +76,16 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Logged out successfully'
-        ]);
+        ])->cookie(
+            'access_token',
+            '',
+            -1,  // Expire immediately
+            '/',
+            null,
+            true,
+            true
+        );
     }
-
     /**
      * Get authenticated user.
      */

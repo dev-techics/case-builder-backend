@@ -18,6 +18,8 @@ return Application::configure(basePath: dirname(__DIR__))
             \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
         ]);
 
+        // Configure CORS
+       
         // You don't need to define auth:sanctum alias
         // Laravel handles this automatically when you use auth:sanctum in routes
 
