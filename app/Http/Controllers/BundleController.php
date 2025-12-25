@@ -16,6 +16,7 @@ class BundleController extends Controller
     public function index(Request $request): JsonResponse
     {
         $bundles = Bundle::where('user_id', Auth::id())
+            ->whereNull('deleted_at')
             ->orderBy('created_at', 'desc')
             ->paginate(15);
 
@@ -113,7 +114,7 @@ class BundleController extends Controller
             ], 403);
         }
 
-        $bundle->delete();
+        $bundle->softDelete();
 
         return response()->json([
             'message' => 'Bundle deleted successfully'

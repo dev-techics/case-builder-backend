@@ -12,7 +12,7 @@ use Illuminate\Validation\ValidationException;
 class AuthController extends Controller
 {
     /**
-     * Register a new user.
+     * Register a new user and return token.
      */
     public function register(Request $request): JsonResponse
     {
@@ -28,14 +28,19 @@ class AuthController extends Controller
             'password' => Hash::make($validated['password']),
         ]);
 
+        // Create token for the new user
+        $token = $user->createToken('auth_token')->plainTextToken;
+
         return response()->json([
             'message' => 'User registered successfully',
             'user' => $user,
+            'access_token' => $token,
+            'token_type' => 'Bearer',
         ], 201);
     }
 
     /**
-     * Login user and create token.
+     * Login user and return token.
      */
     public function login(Request $request): JsonResponse
     {
@@ -52,40 +57,30 @@ class AuthController extends Controller
 
         $user = User::where('email', $validated['email'])->first();
 
+        // Create token
         $token = $user->createToken('auth_token')->plainTextToken;
 
-        return response()
-            ->json(['user' => $user])
-            ->cookie(
-                'access_token',
-                $token,
-                60 * 24,   // minutes
-                '/',
-                null,
-                true,     // secure (true in production HTTPS)
-                true      // httpOnly 🔒
-            );
+        return response()->json([
+            'message' => 'Login successful',
+            'user' => $user,
+            'access_token' => $token,
+            'token_type' => 'Bearer',
+        ]);
     }
 
     /**
-     * Logout user (revoke token).
+     * Logout user (revoke current token).
      */
     public function logout(Request $request): JsonResponse
     {
+        // Revoke the token that was used to authenticate the current request
         $request->user()->currentAccessToken()->delete();
 
         return response()->json([
             'message' => 'Logged out successfully'
-        ])->cookie(
-            'access_token',
-            '',
-            -1,  // Expire immediately
-            '/',
-            null,
-            true,
-            true
-        );
+        ]);
     }
+
     /**
      * Get authenticated user.
      */

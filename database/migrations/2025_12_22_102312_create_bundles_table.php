@@ -18,13 +18,15 @@ return new class extends Migration
             $table->string('case_number')->nullable();
             $table->integer('total_documents')->default(0);
             $table->json('metadata')->nullable();
+            $table->string('status')->default('In Progress');
+            $table->softDeletes();
             $table->timestamps();
 
             // Foreign key constraint
             $table->foreign('user_id')
-                  ->references('id')
-                  ->on('users')
-                  ->onDelete('cascade');
+                ->references('id')
+                ->on('users')
+                ->onDelete('cascade');
 
             // Index for faster queries
             $table->index(['user_id', 'created_at']);

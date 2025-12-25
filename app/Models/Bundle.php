@@ -21,6 +21,7 @@ class Bundle extends Model
         'name',
         'case_number',
         'total_documents',
+        'status',
         'metadata',
     ];
 
@@ -49,7 +50,7 @@ class Bundle extends Model
      */
     public function documents(): HasMany
     {
-        return $this->hasMany(BundleDocument::class)->orderBy('order');
+        return $this->hasMany(Document::class)->orderBy('order');
     }
 
     /**
@@ -59,5 +60,14 @@ class Bundle extends Model
     {
         $this->total_documents = $this->documents()->count();
         $this->save();
+    }
+
+    /**
+     * Soft delete the bundle and its documents.
+     */
+    public function softDelete(): void
+    {
+        $this->documents()->delete();
+        $this->delete();
     }
 }

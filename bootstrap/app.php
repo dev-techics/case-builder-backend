@@ -12,17 +12,8 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-
-        // API middleware group (Sanctum is already included here)
-        $middleware->api(prepend: [
-            \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
-        ]);
-
-        // Configure CORS
-       
-        // You don't need to define auth:sanctum alias
-        // Laravel handles this automatically when you use auth:sanctum in routes
-
+        // Remove EnsureFrontendRequestsAreStateful for token-based auth
+        // API routes will only use Sanctum token authentication
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //
