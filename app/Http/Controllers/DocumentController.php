@@ -7,6 +7,7 @@ use App\Models\Bundle;
 use App\Models\Document;
 use App\Services\DocumentTreeBuilder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -49,11 +50,12 @@ class DocumentController extends Controller
      */
     public function upload(Request $request, Bundle $bundle)
     {
+        Log::info('Upload request received', ['request' => $request->all()]);
+        // echo 'Upload request received'; // For debugging
         // Check if user owns this bundle
         if ($bundle->user_id !== $request->user()->id) {
             abort(403, 'Unauthorized');
         }
-
         $request->validate([
             'files' => 'required|array|min:1',
             'files.*' => 'required|file|mimes:pdf|max:102400', // 100MB max per file
@@ -163,7 +165,7 @@ class DocumentController extends Controller
     public function stream(Document $document, Request $request): StreamedResponse
     {
         // Check if user owns this bundle
-        if ($document->bundle->user_id !== $request->user()->id) {
+        if ($document->bundle->user_id !== $request->user()->id) {  
             abort(403, 'Unauthorized');
         }
 
