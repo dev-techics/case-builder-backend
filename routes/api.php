@@ -6,6 +6,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BundleController;
 use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\HighlightController;
+use App\Http\Controllers\CommentController;
 
 // Public routes
 Route::post('/register', [AuthController::class, 'register']);
@@ -26,36 +27,37 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Document routes nested under bundles
         Route::prefix('/{bundle}/documents')->group(function () {
-            // Get file tree for the editor
             Route::get('/', [DocumentController::class, 'index']);
-            
-            // Upload new files (accepts multiple files)
             Route::post('/upload', [DocumentController::class, 'upload']);
-            
-            // Create folder
             Route::post('/', [DocumentController::class, 'store']);
-            
-            // Reorder items (drag & drop)
             Route::post('/reorder', [DocumentController::class, 'reorder']);
         });
 
         // Highlight routes nested under bundles
         Route::prefix('/{bundle}/highlights')->group(function () {
-            // Get all highlights for a bundle
             Route::get('/', [HighlightController::class, 'index']);
-            
-            // Create a single highlight
             Route::post('/', [HighlightController::class, 'store']);
-            
-            // Bulk create highlights
             Route::post('/bulk', [HighlightController::class, 'bulkStore']);
-            
-            // Bulk delete highlights
             Route::post('/bulk-delete', [HighlightController::class, 'bulkDestroy']);
+        });
+
+        // Comment routes nested under bundles
+        Route::prefix('/{bundle}/comments')->group(function () {
+            // Get all comments for a bundle
+            Route::get('/', [CommentController::class, 'index']);
+            
+            // Create a comment
+            Route::post('/', [CommentController::class, 'store']);
+            
+            // Bulk delete comments
+            Route::post('/bulk-delete', [CommentController::class, 'bulkDestroy']);
+            
+            // Get unresolved count
+            Route::get('/unresolved-count', [CommentController::class, 'unresolvedCount']);
         });
     });
 
-    // Document-specific routes (need document ID directly)
+    // Document-specific routes
     Route::prefix('/documents')->group(function () {
         // Stream/download file
         Route::get('/{document}/stream', [DocumentController::class, 'stream'])
@@ -70,9 +72,12 @@ Route::middleware('auth:sanctum')->group(function () {
         // Highlight routes for specific document
         Route::get('/{document}/highlights', [HighlightController::class, 'getByDocument']);
         Route::delete('/{document}/highlights', [HighlightController::class, 'clearDocument']);
-        
-        // Highlight routes for specific page
         Route::delete('/{document}/pages/{page}/highlights', [HighlightController::class, 'clearPage']);
+
+        // Comment routes for specific document
+        Route::get('/{document}/comments', [CommentController::class, 'getByDocument']);
+        Route::delete('/{document}/comments', [CommentController::class, 'clearDocument']);
+        Route::delete('/{document}/pages/{page}/comments', [CommentController::class, 'clearPage']);
     });
 
     // Individual highlight operations
@@ -80,5 +85,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{highlight}', [HighlightController::class, 'show']);
         Route::put('/{highlight}', [HighlightController::class, 'update']);
         Route::delete('/{highlight}', [HighlightController::class, 'destroy']);
+    });
+
+    // Individual comment operations
+    Route::prefix('/comments')->group(function () {
+        Route::get('/{comment}', [CommentController::class, 'show']);
+        Route::put('/{comment}', [CommentController::class, 'update']);
+        Route::delete('/{comment}', [CommentController::class, 'destroy']);
+        Route::post('/{comment}/toggle-resolved', [CommentController::class, 'toggleResolved']);
     });
 });

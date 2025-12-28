@@ -44,4 +44,32 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+     /*=============================================
+    =            Relationships                    =
+    =============================================*/
+
+    /**
+     * Get all bundles owned by the user
+     */
+    public function bundles()
+    {
+        return $this->hasMany(Bundle::class);
+    }
+
+    /**
+     * Get all highlights created by the user
+     */
+    public function highlights()
+    {
+        return $this->hasMany(Highlight::class);
+    }
+
+    /**
+     * Get all comments created by the user
+     */
+    public function comments()
+    {
+        return $this->hasMany(Comment::class);
+    }
 }
