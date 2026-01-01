@@ -73,9 +73,9 @@ class HighlightController extends Controller
             'color_name' => 'required|string',
             'color_hex' => 'required|string|regex:/^#[0-9A-Fa-f]{6}$/',
             'color_rgb' => 'required|array',
-            'color_rgb.r' => 'required|integer|min:0|max:255',
-            'color_rgb.g' => 'required|integer|min:0|max:255',
-            'color_rgb.b' => 'required|integer|min:0|max:255',
+            'color_rgb.r' => 'required|numeric|min:0|max:255',
+            'color_rgb.g' => 'required|numeric|min:0|max:255',
+            'color_rgb.b' => 'required|numeric|min:0|max:255',
             'opacity' => 'required|numeric|min:0|max:1',
         ]);
 
