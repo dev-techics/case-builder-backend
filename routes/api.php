@@ -24,6 +24,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/{bundle}', [BundleController::class, 'update']);
         Route::delete('/{bundle}', [BundleController::class, 'destroy']);
 
+        // Update metadata (headers/footers)
+        Route::patch('/{bundle}/metadata', [BundleController::class, 'updateMetadata']);
+
         // Document routes nested under bundles
         Route::prefix('/{bundle}/documents')->group(function () {
             Route::get('/', [DocumentController::class, 'index']);

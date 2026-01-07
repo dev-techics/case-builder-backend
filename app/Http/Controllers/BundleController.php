@@ -102,6 +102,40 @@ class BundleController extends Controller
             'bundle' => $bundle
         ]);
     }
+    
+     /**
+     * Update bundle metadata (headers/footers)
+     * PATCH /api/bundles/{bundle}/metadata
+     */
+
+    public function updateMetadata(Request $request, Bundle $bundle): JsonResponse
+    {
+        // Check if the bundle belongs to the authenticated user
+        if ($bundle->user_id !== Auth::id()) {
+            return response()->json([
+                'message' => 'Unauthorized'
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'header_left' => 'nullable|string|max:255',
+            'header_right' => 'nullable|string|max:255',
+            'footer' => 'nullable|string|max:255',
+        ]);
+
+        // Merge with existing metadata
+        $metadata = $bundle->metadata ?? [];
+        $metadata['header_left'] = $validated['header_left'] ?? '';
+        $metadata['header_right'] = $validated['header_right'] ?? '';
+        $metadata['footer'] = $validated['footer'] ?? '';
+
+        $bundle->update(['metadata' => $metadata]);
+
+        return response()->json([
+            'message' => 'Bundle metadata updated successfully',
+            'metadata' => $metadata
+        ]);
+    }
 
     /**
      * Remove the specified bundle.

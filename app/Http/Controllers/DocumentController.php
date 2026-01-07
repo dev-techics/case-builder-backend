@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Bundle;
 use App\Models\Document;
 use App\Services\DocumentTreeBuilder;
+use App\Services\PdfModifierService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -15,10 +16,13 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 class DocumentController extends Controller
 {
     protected DocumentTreeBuilder $treeBuilder;
+    protected PdfModifierService $pdfModifier;
 
-    public function __construct(DocumentTreeBuilder $treeBuilder)
+
+    public function __construct(DocumentTreeBuilder $treeBuilder, PdfModifierService $pdfModifier)
     {
         $this->treeBuilder = $treeBuilder;
+        $this->pdfModifier = $pdfModifier;
     }
 
     /**
@@ -72,7 +76,7 @@ class DocumentController extends Controller
 
         foreach ($request->file('files') as $file) {
             $maxOrder++;
-            
+
             // Generate unique filename
             $filename = Str::uuid() . '.pdf';
             $path = "bundles/{$bundle->id}/" . $filename;
@@ -82,7 +86,7 @@ class DocumentController extends Controller
 
             // Get file metadata
             $fileSize = $file->getSize();
-            
+
             // Create document record
             $document = Document::create([
                 'bundle_id' => $bundle->id,
@@ -165,7 +169,7 @@ class DocumentController extends Controller
     public function stream(Document $document, Request $request): StreamedResponse
     {
         // Check if user owns this bundle
-        if ($document->bundle->user_id !== $request->user()->id) {  
+        if ($document->bundle->user_id !== $request->user()->id) {
             abort(403, 'Unauthorized');
         }
 
@@ -173,6 +177,74 @@ class DocumentController extends Controller
             abort(404, 'File not found');
         }
 
+        // Get full path to original file
+        $sourcePath = Storage::path($document->storage_path);
+
+        // Get header/footer from bundle metadata
+        $bundle = $document->bundle;
+        $metadata = $bundle->metadata ?? [];
+
+        Log::info('Bundle metadata', ['metadata' => $metadata]);
+
+        $headerFooter = [
+            'headerLeft' => $metadata['header_left'] ?? '',
+            'headerRight' => $metadata['header_right'] ?? '',
+            'footer' => $metadata['footer'] ?? '',
+        ];
+
+        Log::info('Header/Footer config', ['config' => $headerFooter]);
+
+        // Check if any header/footer is set (check for non-empty strings)
+        $hasModifications = (!empty($headerFooter['headerLeft']) && $headerFooter['headerLeft'] !== '') ||
+            (!empty($headerFooter['headerRight']) && $headerFooter['headerRight'] !== '') ||
+            (!empty($headerFooter['footer']) && $headerFooter['footer'] !== '');
+
+        Log::info('Has modifications?', ['has_modifications' => $hasModifications]);
+
+        if ($hasModifications) {
+            // Generate cache key based on document and bundle metadata
+            $cacheKey = md5($document->id . json_encode($headerFooter));
+
+            try {
+                Log::info('Attempting to generate modified PDF', [
+                    'document_id' => $document->id,
+                    'cache_key' => $cacheKey
+                ]);
+
+                // Generate modified PDF (uses cache if available)
+                $modifiedPath = $this->pdfModifier->generate(
+                    $sourcePath,
+                    $headerFooter,
+                    $cacheKey
+                );
+
+                Log::info('Modified PDF generated', ['path' => $modifiedPath]);
+
+                // Stream the modified PDF
+                return response()->stream(function () use ($modifiedPath) {
+                    $stream = Storage::readStream($modifiedPath);
+                    fpassthru($stream);
+                    fclose($stream);
+                }, 200, [
+                    'Content-Type' => 'application/pdf',
+                    'Content-Disposition' => 'inline; filename="' . $document->name . '"',
+                    'Cache-Control' => 'public, max-age=31536000',
+                    'X-PDF-Modified' => 'true',
+                ]);
+            } catch (\Exception $e) {
+                Log::error('PDF modification failed', [
+                    'document_id' => $document->id,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
+                ]);
+
+                // Fall back to original PDF if modification fails
+            }
+        }
+
+        Log::info('Serving original PDF');
+
+        // Stream original PDF (no modifications or fallback)
         return response()->stream(function () use ($document) {
             $stream = Storage::readStream($document->storage_path);
             fpassthru($stream);
@@ -180,9 +252,10 @@ class DocumentController extends Controller
         }, 200, [
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => 'inline; filename="' . $document->name . '"',
+            'Cache-Control' => 'public, max-age=31536000',
+            'X-PDF-Modified' => 'false',
         ]);
     }
-
     /**
      * Rename file or folder
      * PATCH /api/documents/{document}/rename
