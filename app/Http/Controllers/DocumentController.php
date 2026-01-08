@@ -164,7 +164,7 @@ class DocumentController extends Controller
 
     /**
      * Stream a PDF securely
-     * GET /api/documents/{document}/stream
+     * GET /api/documents/{document}/stream?original=true
      */
     public function stream(Document $document, Request $request): StreamedResponse
     {
@@ -175,6 +175,25 @@ class DocumentController extends Controller
 
         if (!$document->storage_path || !Storage::exists($document->storage_path)) {
             abort(404, 'File not found');
+        }
+
+        // Check if original PDF is requested (for export purposes)
+        $returnOriginal = $request->query('original', 'false') === 'true';
+
+        if ($returnOriginal) {
+            Log::info('Serving original PDF (for export)', ['document_id' => $document->id]);
+
+            // Stream original PDF without any modifications
+            return response()->stream(function () use ($document) {
+                $stream = Storage::readStream($document->storage_path);
+                fpassthru($stream);
+                fclose($stream);
+            }, 200, [
+                'Content-Type' => 'application/pdf',
+                'Content-Disposition' => 'inline; filename="' . $document->name . '"',
+                'X-PDF-Modified' => 'false',
+                'X-PDF-Original' => 'true',
+            ]);
         }
 
         // Get full path to original file
@@ -228,7 +247,6 @@ class DocumentController extends Controller
                 }, 200, [
                     'Content-Type' => 'application/pdf',
                     'Content-Disposition' => 'inline; filename="' . $document->name . '"',
-                    'Cache-Control' => 'public, max-age=31536000',
                     'X-PDF-Modified' => 'true',
                 ]);
             } catch (\Exception $e) {
@@ -252,7 +270,6 @@ class DocumentController extends Controller
         }, 200, [
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => 'inline; filename="' . $document->name . '"',
-            'Cache-Control' => 'public, max-age=31536000',
             'X-PDF-Modified' => 'false',
         ]);
     }

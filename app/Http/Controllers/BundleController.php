@@ -3,13 +3,60 @@
 namespace App\Http\Controllers;
 
 use App\Models\Bundle;
+use App\Services\BundleExportService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 
 class BundleController extends Controller
 {
+
+     public function __construct(
+        private BundleExportService $exportService
+    ) {}
+
+        /**
+     * Export bundle as single PDF
+     * POST /api/bundles/{bundle}/export
+     */
+    public function export(Bundle $bundle, Request $request)
+    {
+        // Check authorization
+        if ($bundle->user_id !== $request->user()->id) {
+            abort(403, 'Unauthorized');
+        }
+
+        $validated = $request->validate([
+            'include_index' => 'boolean',
+            'index_entries' => 'array',
+            'highlights' => 'array',
+        ]);
+
+        try {
+            $path = $this->exportService->exportBundle(
+                $bundle,
+                $validated['include_index'] ?? true,
+                $validated['index_entries'] ?? null,
+                $validated['highlights'] ?? null
+            );
+
+            // Return download response
+            return response()->download(
+                Storage::path($path),
+                basename($path),
+                ['Content-Type' => 'application/pdf']
+            )->deleteFileAfterSend(true);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Export failed',
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
    /**
      * Display a listing of bundles for the authenticated user.
      */

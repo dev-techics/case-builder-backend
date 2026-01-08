@@ -55,7 +55,7 @@ class PdfModifierService
                 $pdf->useTemplate($tpl, 0, 0, $size['width'], $size['height']);
 
                 // Set font for headers/footers
-                $pdf->SetFont('helvetica', '', 9);
+                $pdf->SetFont('helvetica', '', 10);
                 $pdf->SetTextColor(100, 100, 100); // Gray color
 
                 // Header left
@@ -79,9 +79,10 @@ class PdfModifierService
                     Log::info("Added footer: {$headerFooter['footer']}");
                 }
 
-                // Page number (footer right)
-                $pdf->SetXY($size['width'] - 110, $size['height'] - 15);
-                $pdf->Cell(100, 10, "Page {$i} of {$pageCount}", 0, 0, 'R');
+                // if ($includePageNumbers) {
+                //     $pdf->SetXY($size['width'] - 110, $size['height'] - 15);
+                //     $pdf->Cell(100, 10, "Page {$i} of {$pageCount}", 0, 0, 'R');
+                // }
             }
 
             // Generate PDF content

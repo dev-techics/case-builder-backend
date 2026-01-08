@@ -24,6 +24,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/{bundle}', [BundleController::class, 'update']);
         Route::delete('/{bundle}', [BundleController::class, 'destroy']);
 
+        // Export bundle
+        Route::post('/{bundle}/export', [BundleController::class, 'export']);
+        
         // Update metadata (headers/footers)
         Route::patch('/{bundle}/metadata', [BundleController::class, 'updateMetadata']);
 
