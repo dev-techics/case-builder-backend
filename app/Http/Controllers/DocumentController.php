@@ -190,6 +190,7 @@ class DocumentController extends Controller
                 fclose($stream);
             }, 200, [
                 'Content-Type' => 'application/pdf',
+                'Content-Length' => Storage::size($document->storage_path),
                 'Content-Disposition' => 'inline; filename="' . $document->name . '"',
                 'X-PDF-Modified' => 'false',
                 'X-PDF-Original' => 'true',
@@ -246,6 +247,7 @@ class DocumentController extends Controller
                     fclose($stream);
                 }, 200, [
                     'Content-Type' => 'application/pdf',
+                    'Content-Length' => Storage::size($modifiedPath),
                     'Content-Disposition' => 'inline; filename="' . $document->name . '"',
                     'X-PDF-Modified' => 'true',
                 ]);
@@ -269,6 +271,7 @@ class DocumentController extends Controller
             fclose($stream);
         }, 200, [
             'Content-Type' => 'application/pdf',
+            'Content-Length' => Storage::size($document->storage_path),
             'Content-Disposition' => 'inline; filename="' . $document->name . '"',
             'X-PDF-Modified' => 'false',
         ]);
