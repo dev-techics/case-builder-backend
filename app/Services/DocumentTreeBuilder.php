@@ -17,6 +17,7 @@ class DocumentTreeBuilder
             ->map(function ($doc) use ($documents) {
                 return [
                     'id' => (string) $doc->id,
+                    'parent_id' => $doc->parent_id,
                     'name' => $doc->name,
                     'type' => $doc->type,
                     'url' => $doc->type === 'file'

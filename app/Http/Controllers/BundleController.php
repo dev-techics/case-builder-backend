@@ -4,18 +4,55 @@ namespace App\Http\Controllers;
 
 use App\Models\Bundle;
 use App\Services\BundleExportService;
+use App\Services\IndexGenerationService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+
 
 class BundleController extends Controller
 {
+    protected IndexGenerationService $indexGenerator;
 
      public function __construct(
-        private BundleExportService $exportService
-    ) {}
+        private BundleExportService $exportService,
+        IndexGenerationService $indexGenerator
+    ) {
+        $this->indexGenerator = $indexGenerator;
+    }
+
+     public function streamIndex(Bundle $bundle, Request $request): StreamedResponse
+    {
+        // Check if user owns this bundle
+        if ($bundle->user_id !== $request->user()->id) {
+            abort(403, 'Unauthorized');
+        }
+
+        // Regenerate if needed
+        if ($this->indexGenerator->needsRegeneration($bundle)) {
+            $this->indexGenerator->generateIndex($bundle);
+        }
+
+        $indexPath = $this->indexGenerator->getIndexPath($bundle);
+
+        if (!$indexPath || !Storage::exists($indexPath)) {
+            abort(404, 'Index not found');
+        }
+
+        return response()->stream(function () use ($indexPath) {
+            $stream = Storage::readStream($indexPath);
+            fpassthru($stream);
+            fclose($stream);
+        }, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Length' => Storage::size($indexPath),
+            'Content-Disposition' => 'inline; filename="index.pdf"',
+            'Cache-Control' => 'public, max-age=3600',
+        ]);
+    }
 
         /**
      * Export bundle as single PDF

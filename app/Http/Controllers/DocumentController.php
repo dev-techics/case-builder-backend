@@ -7,6 +7,8 @@ use App\Models\Bundle;
 use App\Models\Document;
 use App\Services\DocumentTreeBuilder;
 use App\Services\PdfModifierService;
+use App\Services\IndexGenerationService;
+use App\Services\FileConversionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -17,17 +19,106 @@ class DocumentController extends Controller
 {
     protected DocumentTreeBuilder $treeBuilder;
     protected PdfModifierService $pdfModifier;
+    protected IndexGenerationService $indexGenerator;
+    protected FileConversionService $fileConverter;
 
 
-    public function __construct(DocumentTreeBuilder $treeBuilder, PdfModifierService $pdfModifier)
+    public function __construct(DocumentTreeBuilder $treeBuilder, PdfModifierService $pdfModifier, IndexGenerationService $indexGenerator,  FileConversionService $fileConverter)
     {
         $this->treeBuilder = $treeBuilder;
         $this->pdfModifier = $pdfModifier;
+        $this->indexGenerator = $indexGenerator;
+        $this->fileConverter = $fileConverter;
     }
 
     /**
-     * Get full document tree for a bundle (Editor load)
-     * GET /api/bundles/{bundle}/documents
+     * Move a document to a different parent folder
+     * PATCH /api/documents/{document}/move
+     */
+    public function move(Request $request, Document $document)
+    {
+        // Check if user owns this bundle
+        if ($document->bundle->user_id !== $request->user()->id) {
+            abort(403, 'Unauthorized');
+        }
+
+        $data = $request->validate([
+            'parent_id' => 'nullable|exists:documents,id',
+        ]);
+
+        // If parent_id is provided, verify it belongs to same bundle and is a folder
+        if ($data['parent_id']) {
+            $parentFolder = Document::findOrFail($data['parent_id']);
+
+            if ($parentFolder->bundle_id !== $document->bundle_id) {
+                return response()->json([
+                    'error' => 'Parent folder does not belong to this bundle'
+                ], 422);
+            }
+
+            if ($parentFolder->type !== 'folder') {
+                return response()->json([
+                    'error' => 'Parent must be a folder'
+                ], 422);
+            }
+
+            // Prevent moving a folder into itself or its descendants
+            if ($document->type === 'folder') {
+                if ($this->isDescendantOf($data['parent_id'], $document->id)) {
+                    return response()->json([
+                        'error' => 'Cannot move folder into itself or its descendants'
+                    ], 422);
+                }
+            }
+        }
+
+        // Get the highest order in the new parent
+        $maxOrder = Document::where('bundle_id', $document->bundle_id)
+            ->where('parent_id', $data['parent_id'] ?? null)
+            ->max('order') ?? -1;
+
+        // Update document's parent and order
+        $document->update([
+            'parent_id' => $data['parent_id'] ?? null,
+            'order' => $maxOrder + 1,
+        ]);
+
+        // Regenerate index after moving
+        app(\App\Services\IndexGenerationService::class)
+            ->generateIndex($document->bundle);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Document moved successfully',
+            'document' => [
+                'id' => $document->id,
+                'parent_id' => $document->parent_id,
+                'order' => $document->order,
+            ],
+        ]);
+    }
+
+    /**
+     * Check if a folder is a descendant of another folder
+     */
+    private function isDescendantOf(string $potentialDescendantId, string $ancestorId): bool
+    {
+        $current = Document::find($potentialDescendantId);
+
+        while ($current && $current->parent_id) {
+            if ($current->parent_id === $ancestorId) {
+                return true;
+            }
+            $current = Document::find($current->parent_id);
+        }
+
+        return false;
+    }
+
+
+    /**
+     * * Get full document tree for a bundle (Editor load)
+     * * GET /api/bundles/{bundle}/documents
      */
     public function index(Request $request, Bundle $bundle)
     {
@@ -36,87 +127,205 @@ class DocumentController extends Controller
             abort(403, 'Unauthorized');
         }
 
+        // Regenerate index if needed
+        if ($this->indexGenerator->needsRegeneration($bundle)) {
+            $this->indexGenerator->generateIndex($bundle);
+        }
+
         $documents = Document::where('bundle_id', $bundle->id)->get();
+        // Log::info("Documents", [dump($documents)]);
+        // Get index path
+        $indexPath = $this->indexGenerator->getIndexPath($bundle);
 
         $tree = [
             'id' => 'bundle-' . $bundle->id,
             'projectName' => $bundle->name,
             'type' => 'folder',
+            'indexUrl' => $indexPath ? route('bundles.index-stream', $bundle->id) : null,
             'children' => $this->treeBuilder->build($documents),
         ];
-
+        // Log::info("Document tree builder: ", $this->treeBuilder->build($documents));
         return response()->json($tree);
     }
 
     /**
-     * Upload one or multiple PDF files
+     * Upload one or multiple files (PDF, images, documents, etc.)
      * POST /api/bundles/{bundle}/documents/upload
      */
     public function upload(Request $request, Bundle $bundle)
     {
         Log::info('Upload request received', ['request' => $request->all()]);
-        // echo 'Upload request received'; // For debugging
+
         // Check if user owns this bundle
         if ($bundle->user_id !== $request->user()->id) {
             abort(403, 'Unauthorized');
         }
+
         $request->validate([
             'files' => 'required|array|min:1',
-            'files.*' => 'required|file|mimes:pdf|max:102400', // 100MB max per file
+            'files.*' => 'required|file|max:102400', // 100MB max per file
             'parent_id' => 'nullable|exists:documents,id',
         ]);
 
         $parentId = $request->parent_id;
         $uploadedDocuments = [];
+        $conversionStatuses = [];
 
         // Get the current max order for this parent
         $maxOrder = Document::where('bundle_id', $bundle->id)
             ->where('parent_id', $parentId)
             ->max('order') ?? -1;
 
-        foreach ($request->file('files') as $file) {
+        foreach ($request->file('files') as $uploadedFile) {
             $maxOrder++;
 
-            // Generate unique filename
-            $filename = Str::uuid() . '.pdf';
-            $path = "bundles/{$bundle->id}/" . $filename;
+            try {
+                $originalName = $uploadedFile->getClientOriginalName();
+                $mimeType = $uploadedFile->getMimeType();
+                $fileSize = $uploadedFile->getSize();
 
-            // Store file
-            Storage::put($path, file_get_contents($file));
+                Log::info('Processing file', [
+                    'name' => $originalName,
+                    'mime_type' => $mimeType,
+                    'size' => $fileSize
+                ]);
 
-            // Get file metadata
-            $fileSize = $file->getSize();
+                $storagePath = null;
+                $wasConverted = false;
 
-            // Create document record
-            $document = Document::create([
-                'bundle_id' => $bundle->id,
-                'parent_id' => $parentId,
-                'name' => $file->getClientOriginalName(),
-                'type' => 'file',
-                'mime_type' => 'application/pdf',
-                'storage_path' => $path,
-                'order' => $maxOrder,
-                'metadata' => [
-                    'size' => $fileSize,
-                    'original_name' => $file->getClientOriginalName(),
-                ],
-            ]);
+                // Check if file is already a PDF
+                if ($mimeType === 'application/pdf') {
+                    // Store PDF directly
+                    $filename = Str::uuid() . '.pdf';
+                    $storagePath = "bundles/{$bundle->id}/" . $filename;
+                    Storage::put($storagePath, file_get_contents($uploadedFile));
 
-            $uploadedDocuments[] = [
-                'id' => (string) $document->id,
-                'name' => $document->name,
-                'type' => 'file',
-                'url' => route('documents.stream', $document->id),
-            ];
+                    Log::info('PDF stored directly', ['path' => $storagePath]);
+                } elseif ($this->fileConverter->isSupported($mimeType)) {
+                    // Convert to PDF
+                    Log::info('Converting file to PDF', [
+                        'name' => $originalName,
+                        'type' => $this->fileConverter->getFileTypeName($mimeType)
+                    ]);
+
+                    try {
+                        // Save uploaded file temporarily
+                        $tempPath = $uploadedFile->store('temp');
+                        $tempFullPath = Storage::path($tempPath);
+
+                        // Convert to PDF
+                        $convertedTempPath = $this->fileConverter->convertToPdf(
+                            $tempFullPath,
+                            $mimeType,
+                            $originalName
+                        );
+
+                        // Move converted PDF to final location
+                        $filename = Str::uuid() . '.pdf';
+                        $storagePath = "bundles/{$bundle->id}/" . $filename;
+
+                        Storage::move($convertedTempPath, $storagePath);
+
+                        // Clean up temp file
+                        Storage::delete($tempPath);
+
+                        $wasConverted = true;
+
+                        $conversionStatuses[] = [
+                            'fileName' => $originalName,
+                            'status' => 'success',
+                            'message' => 'Converted to PDF successfully'
+                        ];
+
+                        Log::info('File converted and stored', ['path' => $storagePath]);
+                    } catch (\Exception $e) {
+                        Log::error('Conversion failed', [
+                            'file' => $originalName,
+                            'error' => $e->getMessage()
+                        ]);
+
+                        $conversionStatuses[] = [
+                            'fileName' => $originalName,
+                            'status' => 'failed',
+                            'message' => $e->getMessage()
+                        ];
+
+                        // Skip this file if conversion fails
+                        continue;
+                    }
+                } else {
+                    // Unsupported file type
+                    Log::warning('Unsupported file type', [
+                        'file' => $originalName,
+                        'mime_type' => $mimeType
+                    ]);
+
+                    $conversionStatuses[] = [
+                        'fileName' => $originalName,
+                        'status' => 'failed',
+                        'message' => 'Unsupported file type'
+                    ];
+
+                    continue;
+                }
+
+                // Create document record
+                $document = Document::create([
+                    'bundle_id' => $bundle->id,
+                    'parent_id' => $parentId,
+                    'name' => $originalName,
+                    'type' => 'file',
+                    'mime_type' => 'application/pdf',
+                    'storage_path' => $storagePath,
+                    'order' => $maxOrder,
+                    'metadata' => [
+                        'size' => $fileSize,
+                        'original_name' => $originalName,
+                        'original_mime_type' => $mimeType,
+                        'was_converted' => $wasConverted,
+                        'conversion_source' => $wasConverted ? $this->fileConverter->getFileTypeName($mimeType) : null,
+                    ],
+                ]);
+
+                $uploadedDocuments[] = [
+                    'id' => (string) $document->id,
+                    'parent_id' => $document->parent_id,
+                    'name' => $document->name,
+                    'type' => 'file',
+                    'url' => route('documents.stream', $document->id),
+                    'was_converted' => $wasConverted,
+                ];
+            } catch (\Exception $e) {
+                Log::error('Failed to process file', [
+                    'file' => $uploadedFile->getClientOriginalName(),
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
+                ]);
+
+                $conversionStatuses[] = [
+                    'fileName' => $uploadedFile->getClientOriginalName(),
+                    'status' => 'failed',
+                    'message' => 'Failed to process file: ' . $e->getMessage()
+                ];
+            }
         }
 
-        return response()->json([
+        // Regenerate index after upload
+        $this->indexGenerator->generateIndex($bundle);
+
+        $response = [
             'success' => true,
             'message' => count($uploadedDocuments) . ' file(s) uploaded successfully',
             'documents' => $uploadedDocuments,
-        ], 201);
-    }
+        ];
 
+        // Include conversion statuses if any conversions were attempted
+        if (!empty($conversionStatuses)) {
+            $response['conversion_statuses'] = $conversionStatuses;
+        }
+
+        return response()->json($response, 201);
+    }
     /**
      * Store a new folder
      * POST /api/bundles/{bundle}/documents
@@ -153,6 +362,9 @@ class DocumentController extends Controller
                 ->where('parent_id', $data['parent_id'] ?? null)
                 ->max('order') + 1,
         ]);
+
+        // Regenerate index after folder creation
+        $this->indexGenerator->generateIndex($bundle);
 
         return response()->json([
             'id' => (string) $document->id,
@@ -295,6 +507,9 @@ class DocumentController extends Controller
             'name' => $request->name,
         ]);
 
+        // Regenerate index after rename
+        $this->indexGenerator->generateIndex($document->bundle);
+
         return response()->json([
             'success' => true,
             'document' => [
@@ -320,7 +535,18 @@ class DocumentController extends Controller
             Storage::delete($document->storage_path);
         }
 
+        // If it's a folder, delete all children recursively
+        if ($document->isFolder()) {
+            $children = Document::where('parent_id', $document->id)->get();
+            foreach ($children as $child) {
+                $this->destroy($child, $request);
+            }
+        }
+
         $document->delete();
+
+        // Regenerate index after deletion
+        $this->indexGenerator->generateIndex($document->bundle);
 
         return response()->json([
             'success' => true,
@@ -350,6 +576,9 @@ class DocumentController extends Controller
                 ->where('bundle_id', $bundle->id) // Security: ensure it belongs to this bundle
                 ->update(['order' => $item['order']]);
         }
+
+        // Regenerate index after reorder
+        $this->indexGenerator->generateIndex($bundle);
 
         return response()->json([
             'success' => true,

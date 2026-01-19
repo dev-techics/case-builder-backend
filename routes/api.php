@@ -24,17 +24,26 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/{bundle}', [BundleController::class, 'update']);
         Route::delete('/{bundle}', [BundleController::class, 'destroy']);
 
+        // Stream index PDF
+        Route::get('/{bundle}/index-stream', [BundleController::class, 'streamIndex'])
+            ->name('bundles.index-stream');
+
         // Export bundle
         Route::post('/{bundle}/export', [BundleController::class, 'export']);
         
         // Update metadata (headers/footers)
         Route::patch('/{bundle}/metadata', [BundleController::class, 'updateMetadata']);
 
+        /* Bundle crud operation routes */
         // Document routes nested under bundles
         Route::prefix('/{bundle}/documents')->group(function () {
             Route::get('/', [DocumentController::class, 'index']);
             Route::post('/upload', [DocumentController::class, 'upload']);
-            Route::post('/', [DocumentController::class, 'store']);
+            /* 
+            *This route is for creating new folder 
+            ? Do I need a separate controller method for creating folder?
+            */
+            Route::post('/', [DocumentController::class, 'store']); 
             Route::post('/reorder', [DocumentController::class, 'reorder']);
         });
 
@@ -83,6 +92,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{document}/comments', [CommentController::class, 'getByDocument']);
         Route::delete('/{document}/comments', [CommentController::class, 'clearDocument']);
         Route::delete('/{document}/pages/{page}/comments', [CommentController::class, 'clearPage']);
+
+         // NEW: Move document to different parent
+        Route::patch('/{document}/move', [DocumentController::class, 'move']);
     });
 
     // Individual highlight operations
