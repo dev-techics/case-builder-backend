@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Models\Bundle;
 use App\Models\Document;
-use App\Models\Highlight;
 use setasign\Fpdi\Tcpdf\Fpdi;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
@@ -21,13 +20,13 @@ class BundleExportService
      */
     public function exportBundle(
         Bundle $bundle,
-        bool $includeIndex = true
+        bool $includeIndex = true,
+        ?array $indexEntries = null,
+        ?array $highlights = null
     ): string {
         Log::info('Starting bundle export', [
             'bundle_id' => $bundle->id,
-            'include_index' => $includeIndex,
-            'index_path' => $bundle->metadata['index_path'] ?? null
-
+            'include_index' => $includeIndex
         ]);
 
         try {
@@ -39,18 +38,15 @@ class BundleExportService
 
             $globalPageNumber = 1;
             $filePageMapping = [];
-            $index_path = $bundle->metadata['index_path'] ?? null;
-            // Add index pages if requested and available
-            if ($includeIndex && $index_path) {
-                $indexPageCount = $this->addIndexPages($pdf, $bundle);
+
+            // Add index pages if requested
+            if ($includeIndex) {
+                $indexPageCount = $this->addIndexPages($pdf, $bundle, $indexEntries);
                 $globalPageNumber += $indexPageCount;
             }
 
-            // Calculate total pages for footer
+            // Get total pages for footer
             $totalPages = $this->calculateTotalPages($bundle);
-            if ($includeIndex && $index_path) {
-                $totalPages += $this->countIndexPages($bundle);
-            }
 
             // Get root-level documents in order
             $documents = $bundle->documents()
@@ -58,32 +54,21 @@ class BundleExportService
                 ->orderBy('order')
                 ->get();
 
-            // Get bundle metadata for headers/footers
-            $metadata = $bundle->metadata ?? [];
-            $headerFooter = [
-                'headerLeft' => $metadata['header_left'] ?? '',
-                'headerRight' => $metadata['header_right'] ?? '',
-                'footer' => $metadata['footer'] ?? '',
-            ];
-
             // Process each document recursively
             foreach ($documents as $document) {
                 $pageCount = $this->processDocument(
                     $pdf,
                     $document,
+                    $bundle,
                     $globalPageNumber,
                     $totalPages,
-                    $filePageMapping,
-                    $headerFooter
+                    $filePageMapping
                 );
 
                 $globalPageNumber += $pageCount;
             }
 
-            // Get highlights from database
-            $highlights = $this->getHighlightsGrouped($bundle);
-
-            // Add highlights if available
+            // Add highlights if provided
             if (!empty($highlights)) {
                 $this->addHighlights($pdf, $highlights, $filePageMapping);
             }
@@ -91,7 +76,7 @@ class BundleExportService
             // Generate and save PDF
             $filename = $this->generateFilename($bundle);
             $path = "exports/{$filename}";
-
+            
             Storage::put($path, $pdf->Output('', 'S'));
 
             Log::info('Bundle export completed', [
@@ -101,6 +86,7 @@ class BundleExportService
             ]);
 
             return $path;
+
         } catch (\Exception $e) {
             Log::error('Bundle export failed', [
                 'bundle_id' => $bundle->id,
@@ -112,75 +98,15 @@ class BundleExportService
     }
 
     /**
-     * Get highlights grouped by document and page
-     */
-    private function getHighlightsGrouped(Bundle $bundle): array
-    {
-        $highlights = Highlight::where('bundle_id', $bundle->id)->get();
-
-        $grouped = [];
-
-        foreach ($highlights as $highlight) {
-            $documentId = $highlight->document_id;
-            $pageNumber = $highlight->page_number;
-
-            // Get coordinates directly from columns
-            $x = $highlight->x ?? 0;
-            $y = $highlight->y ?? 0;
-            $width = $highlight->width ?? 0;
-            $height = $highlight->height ?? 0;
-
-            // Skip highlights with invalid coordinates
-            if ($width <= 0 || $height <= 0) {
-                Log::warning('Skipping highlight with invalid dimensions', [
-                    'highlight_id' => $highlight->id,
-                    'x' => $x,
-                    'y' => $y,
-                    'width' => $width,
-                    'height' => $height
-                ]);
-                continue;
-            }
-
-            // Get color from color_hex column
-            $colorValue = $highlight->color_hex ?? '#FFFF00';
-
-            if (!isset($grouped[$documentId])) {
-                $grouped[$documentId] = [];
-            }
-
-            if (!isset($grouped[$documentId][$pageNumber])) {
-                $grouped[$documentId][$pageNumber] = [];
-            }
-
-            $grouped[$documentId][$pageNumber][] = [
-                'x' => $x,
-                'y' => $y,
-                'width' => $width,
-                'height' => $height,
-                'color' => $colorValue
-            ];
-        }
-
-        Log::info('Highlights grouped', [
-            'total_highlights' => $highlights->count(),
-            'valid_highlights' => array_sum(array_map(function ($doc) {
-                return array_sum(array_map('count', $doc));
-            }, $grouped))
-        ]);
-
-        return $grouped;
-    }
-    /**
      * Process document recursively (handles folders and files)
      */
     private function processDocument(
         Fpdi $pdf,
         Document $document,
+        Bundle $bundle,
         int &$globalPageNumber,
         int $totalPages,
-        array &$filePageMapping,
-        array $headerFooter
+        array &$filePageMapping
     ): int {
         $totalPageCount = 0;
 
@@ -199,10 +125,10 @@ class BundleExportService
                 $pageCount = $this->processDocument(
                     $pdf,
                     $child,
+                    $bundle,
                     $globalPageNumber,
                     $totalPages,
-                    $filePageMapping,
-                    $headerFooter
+                    $filePageMapping
                 );
 
                 $totalPageCount += $pageCount;
@@ -213,13 +139,13 @@ class BundleExportService
 
         // It's a file - add its pages
         $startPage = $globalPageNumber;
-
+        
         $pageCount = $this->addDocumentPages(
             $pdf,
             $document,
+            $bundle,
             $globalPageNumber,
-            $totalPages,
-            $headerFooter
+            $totalPages
         );
 
         if ($pageCount > 0) {
@@ -241,36 +167,28 @@ class BundleExportService
     }
 
     /**
-     * Count index pages
-     */
-    private function countIndexPages(Bundle $bundle): int
-    {
-        $index_path = $index_path = $bundle->metadata['index_path'] ?? null;
-        if (!$index_path || !Storage::exists($index_path)) {
-            return 0;
-        }
-
-        try {
-            $pdf = new Fpdi();
-            return $pdf->setSourceFile(Storage::path($index_path));
-        } catch (\Exception $e) {
-            Log::warning('Failed to count index pages', [
-                'bundle_id' => $bundle->id,
-                'error' => $e->getMessage()
-            ]);
-            return 0;
-        }
-    }
-
-    /**
      * Add index pages to PDF
      */
-    private function addIndexPages(Fpdi $pdf, Bundle $bundle): int
-    {
-        $index_path = $index_path = $bundle->metadata['index_path'] ?? null;
-
+    private function addIndexPages(
+        Fpdi $pdf,
+        Bundle $bundle,
+        ?array $indexEntries
+    ): int {
         try {
-            if (!$index_path || !Storage::exists($index_path)) {
+            // Generate or get existing index
+            $indexPath = null;
+            
+            if ($indexEntries) {
+                // Use provided entries
+                $indexPath = $this->indexService->getIndexPath($bundle);
+            }
+            
+            if (!$indexPath) {
+                // Generate new index
+                $indexPath = $this->indexService->generateIndex($bundle);
+            }
+
+            if (!$indexPath || !Storage::exists($indexPath)) {
                 Log::warning('No index available for export', [
                     'bundle_id' => $bundle->id
                 ]);
@@ -278,7 +196,7 @@ class BundleExportService
             }
 
             // Import index pages
-            $fullPath = Storage::path($index_path);
+            $fullPath = Storage::path($indexPath);
             $pageCount = $pdf->setSourceFile($fullPath);
 
             for ($i = 1; $i <= $pageCount; $i++) {
@@ -299,6 +217,7 @@ class BundleExportService
             ]);
 
             return $pageCount;
+
         } catch (\Exception $e) {
             Log::error('Failed to add index pages', [
                 'bundle_id' => $bundle->id,
@@ -309,16 +228,16 @@ class BundleExportService
     }
 
     /**
-     * Add document pages with headers, footers, and page numbers
+     * Add document pages with proper null checks
      */
     private function addDocumentPages(
         Fpdi $pdf,
         Document $document,
+        Bundle $bundle,
         int &$globalPageNumber,
-        int $totalPages,
-        array $headerFooter
+        int $totalPages
     ): int {
-        // NULL SAFETY CHECKS
+        // **NULL SAFETY CHECKS**
         if (empty($document->storage_path)) {
             Log::warning('Document has no storage path, skipping', [
                 'document_id' => $document->id,
@@ -347,8 +266,24 @@ class BundleExportService
                 return 0;
             }
 
-            // Import original PDF
-            $pageCount = $pdf->setSourceFile($sourcePath);
+            // Get modified PDF with headers/footers
+            $metadata = $bundle->metadata ?? [];
+            $headerFooter = [
+                'headerLeft' => $metadata['header_left'] ?? '',
+                'headerRight' => $metadata['header_right'] ?? '',
+                'footer' => $metadata['footer'] ?? '',
+            ];
+
+            $cacheKey = md5($document->id . json_encode($headerFooter));
+            $modifiedPath = $this->pdfModifier->generate(
+                $sourcePath,
+                $headerFooter,
+                $cacheKey
+            );
+
+            // Import modified PDF
+            $fullPath = Storage::path($modifiedPath);
+            $pageCount = $pdf->setSourceFile($fullPath);
 
             for ($i = 1; $i <= $pageCount; $i++) {
                 $tpl = $pdf->importPage($i);
@@ -359,22 +294,26 @@ class BundleExportService
                     [$size['width'], $size['height']]
                 );
 
-                // Use template
                 $pdf->useTemplate($tpl, 0, 0, $size['width'], $size['height']);
 
-                // Add headers, footers, and page numbers
-                $this->addPageOverlays(
-                    $pdf,
-                    $size,
-                    $globalPageNumber,
-                    $totalPages,
-                    $headerFooter
+                // Add page number overlay
+                $pdf->SetFont('helvetica', '', 9);
+                $pdf->SetTextColor(100, 100, 100);
+                $pdf->SetXY($size['width'] - 110, $size['height'] - 15);
+                $pdf->Cell(
+                    100,
+                    10,
+                    "Page {$globalPageNumber} of {$totalPages}",
+                    0,
+                    0,
+                    'R'
                 );
 
                 $globalPageNumber++;
             }
 
             return $pageCount;
+
         } catch (\Exception $e) {
             Log::error('Failed to add document pages', [
                 'document_id' => $document->id,
@@ -382,45 +321,6 @@ class BundleExportService
             ]);
             return 0;
         }
-    }
-
-    /**
-     * Add headers, footers, and page numbers to a page
-     */
-    private function addPageOverlays(
-        Fpdi $pdf,
-        array $size,
-        int $pageNumber,
-        int $totalPages,
-        array $headerFooter
-    ): void {
-        $width = $size['width'];
-        $height = $size['height'];
-
-        $pdf->SetFont('helvetica', '', 10);
-        $pdf->SetTextColor(100, 100, 100);
-
-        // Header left
-        if (!empty($headerFooter['headerLeft'])) {
-            $pdf->SetXY(10, 10);
-            $pdf->Cell(0, 10, $headerFooter['headerLeft'], 0, 0, 'L');
-        }
-
-        // Header right
-        if (!empty($headerFooter['headerRight'])) {
-            $pdf->SetXY($width - 130, 10);
-            $pdf->Cell(120, 10, $headerFooter['headerRight'], 0, 0, 'R');
-        }
-
-        // Footer
-        if (!empty($headerFooter['footer'])) {
-            $pdf->SetXY(10, $height - 15);
-            $pdf->Cell(0, 10, $headerFooter['footer'], 0, 0, 'L');
-        }
-
-        // Page number
-        $pdf->SetXY($width - 130, $height - 15);
-        $pdf->Cell(120, 10, "Page {$pageNumber} of {$totalPages}", 0, 0, 'R');
     }
 
     /**
@@ -432,28 +332,29 @@ class BundleExportService
         array $filePageMapping
     ): void {
         try {
-            Log::info("Highlight: ", $highlights);
+            // Note: Adding highlights requires re-processing the PDF
+            // This is a simplified version - you may need a more sophisticated approach
+            
             foreach ($highlights as $documentId => $documentHighlights) {
                 if (!isset($filePageMapping[$documentId])) {
                     continue;
                 }
 
                 $mapping = $filePageMapping[$documentId];
-
+                
                 foreach ($documentHighlights as $pageNum => $pageHighlights) {
                     // Calculate global page number
                     $globalPage = $mapping['start'] + ($pageNum - 1);
-
+                    
                     // Set page
                     $pdf->setPage($globalPage);
-
+                    
                     // Add highlight rectangles
                     $pdf->SetAlpha(0.3);
-
+                    
                     foreach ($pageHighlights as $highlight) {
-                        // Log::info("Highlight color: ", [$highlight['color']['hex'] ?? '#FFFF00']);
-                        $color = $this->parseColor($highlight['color']['hex'] ?? '#FFFF00' ?? '#FFFF00');
-
+                        $color = $this->parseColor($highlight['color'] ?? '#FFFF00');
+                        
                         $pdf->SetFillColor($color['r'], $color['g'], $color['b']);
                         $pdf->Rect(
                             $highlight['x'],
@@ -463,12 +364,13 @@ class BundleExportService
                             'F'
                         );
                     }
-
+                    
                     $pdf->SetAlpha(1);
                 }
             }
 
             Log::info('Highlights added successfully');
+
         } catch (\Exception $e) {
             Log::warning('Failed to add highlights', [
                 'error' => $e->getMessage()
@@ -503,11 +405,11 @@ class BundleExportService
         if ($document->type === 'folder') {
             $children = $document->children()->get();
             $total = 0;
-
+            
             foreach ($children as $child) {
                 $total += $this->countDocumentPages($child);
             }
-
+            
             return $total;
         }
 
@@ -536,7 +438,7 @@ class BundleExportService
         // Default yellow
         $default = ['r' => 255, 'g' => 255, 'b' => 0];
 
-        // RGB format: rgb(255, 255, 0)
+        // RGB format
         if (preg_match('/rgb\((\d+),\s*(\d+),\s*(\d+)\)/', $color, $matches)) {
             return [
                 'r' => (int)$matches[1],
@@ -545,7 +447,7 @@ class BundleExportService
             ];
         }
 
-        // Hex format: #FFFF00
+        // Hex format
         if (preg_match('/#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i', $color, $matches)) {
             return [
                 'r' => hexdec($matches[1]),

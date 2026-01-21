@@ -84,7 +84,7 @@ class FileConversionService
         }
     }
 
-    /**
+      /**
      * Convert image to PDF
      */
     private function convertImageToPdf(string $imagePath, string $originalName): string
@@ -96,35 +96,81 @@ class FileConversionService
         // Get image dimensions
         list($width, $height) = getimagesize($imagePath);
         
-        // Calculate PDF page size (in mm)
-        // Assuming 96 DPI: 1 inch = 25.4 mm, 96 pixels = 1 inch
-        $pageWidth = ($width / 96) * 25.4;
-        $pageHeight = ($height / 96) * 25.4;
+        // A4 dimensions in mm
+        $a4Width = 210;
+        $a4Height = 297;
         
-        // Limit maximum dimensions to A4 equivalent
-        $maxWidth = 210; // A4 width in mm
-        $maxHeight = 297; // A4 height in mm
+        // Determine orientation based on image aspect ratio
+        $imageRatio = $width / $height;
+        $a4Ratio = $a4Width / $a4Height;
         
-        if ($pageWidth > $maxWidth || $pageHeight > $maxHeight) {
-            $ratio = min($maxWidth / $pageWidth, $maxHeight / $pageHeight);
-            $pageWidth *= $ratio;
-            $pageHeight *= $ratio;
+        // Choose A4 orientation that best fits the image
+        if ($imageRatio > 1) {
+            // Image is landscape - use landscape A4
+            $pageWidth = $a4Height;  // 297mm
+            $pageHeight = $a4Width;  // 210mm
+            $orientation = 'L';
+        } else {
+            // Image is portrait or square - use portrait A4
+            $pageWidth = $a4Width;   // 210mm
+            $pageHeight = $a4Height; // 297mm
+            $orientation = 'P';
         }
         
-        // Add page with custom size
-        $pdf->AddPage('P', [$pageWidth, $pageHeight]);
+        // Add A4 page
+        $pdf->AddPage($orientation);
         
-        // Add image to fill the entire page
-        $pdf->Image($imagePath, 0, 0, $pageWidth, $pageHeight, '', '', '', false, 300, '', false, false, 0);
+        // Calculate image dimensions to fit within A4 while maintaining aspect ratio
+        $imageWidthMm = ($width / 96) * 25.4;  // Convert pixels to mm (assuming 96 DPI)
+        $imageHeightMm = ($height / 96) * 25.4;
+        
+        // Scale down if image is larger than page
+        if ($imageWidthMm > $pageWidth || $imageHeightMm > $pageHeight) {
+            $scale = min($pageWidth / $imageWidthMm, $pageHeight / $imageHeightMm);
+            $imageWidthMm *= $scale;
+            $imageHeightMm *= $scale;
+        }
+        
+        // Center the image on the page
+        $x = ($pageWidth - $imageWidthMm) / 2;
+        $y = ($pageHeight - $imageHeightMm) / 2;
+        
+        // Add image centered on page
+        $pdf->Image(
+            $imagePath,
+            $x,                 // x position (centered)
+            $y,                 // y position (centered)
+            $imageWidthMm,      // width
+            $imageHeightMm,     // height
+            '',                 // type (auto-detect)
+            '',                 // link
+            '',                 // align
+            false,              // resize
+            300,                // dpi for quality
+            '',                 // palign
+            false,              // ismask
+            false,              // imgmask
+            0,                  // border
+            false,              // fitbox
+            false,              // hidden
+            true                // fitonpage
+        );
         
         // Save to temp file
         $tempPath = $this->getTempPath($originalName);
         Storage::put($tempPath, $pdf->Output('', 'S'));
         
-        Log::info('Image converted to PDF', ['temp_path' => $tempPath]);
+        Log::info('Image converted to PDF', [
+            'temp_path' => $tempPath,
+            'original_dimensions' => "{$width}x{$height}px",
+            'pdf_dimensions' => "{$imageWidthMm}x{$imageHeightMm}mm",
+            'page_size' => "A4 {$orientation}",
+            'centered_at' => "x:{$x}mm, y:{$y}mm"
+        ]);
         
         return $tempPath;
     }
+
 
     /**
      * Convert text file to PDF
@@ -185,7 +231,6 @@ class FileConversionService
      * 
      * Requires LibreOffice to be installed:
      * - Ubuntu/Debian: sudo apt-get install libreoffice
-     * - macOS: brew install --cask libreoffice
      * - Windows: Download from libreoffice.org
      */
     private function convertUsingLibreOffice(string $sourcePath, string $originalName): string
@@ -263,9 +308,6 @@ class FileConversionService
         $possiblePaths = [
             '/usr/bin/libreoffice',           // Linux
             '/usr/bin/soffice',                // Linux alternative
-            '/Applications/LibreOffice.app/Contents/MacOS/soffice', // macOS
-            'C:\\Program Files\\LibreOffice\\program\\soffice.exe', // Windows
-            'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe', // Windows 32-bit
         ];
 
         foreach ($possiblePaths as $path) {

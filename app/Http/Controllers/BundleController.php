@@ -17,14 +17,14 @@ class BundleController extends Controller
 {
     protected IndexGenerationService $indexGenerator;
 
-     public function __construct(
+    public function __construct(
         private BundleExportService $exportService,
         IndexGenerationService $indexGenerator
     ) {
         $this->indexGenerator = $indexGenerator;
     }
 
-     public function streamIndex(Bundle $bundle, Request $request): StreamedResponse
+    public function streamIndex(Bundle $bundle, Request $request): StreamedResponse
     {
         // Check if user owns this bundle
         if ($bundle->user_id !== $request->user()->id) {
@@ -54,7 +54,7 @@ class BundleController extends Controller
         ]);
     }
 
-        /**
+    /**
      * Export bundle as single PDF
      * POST /api/bundles/{bundle}/export
      */
@@ -67,16 +67,12 @@ class BundleController extends Controller
 
         $validated = $request->validate([
             'include_index' => 'boolean',
-            'index_entries' => 'array',
-            'highlights' => 'array',
         ]);
 
         try {
             $path = $this->exportService->exportBundle(
                 $bundle,
-                $validated['include_index'] ?? true,
-                $validated['index_entries'] ?? null,
-                $validated['highlights'] ?? null
+                $validated['include_index'] ?? true
             );
 
             // Return download response
@@ -85,16 +81,19 @@ class BundleController extends Controller
                 basename($path),
                 ['Content-Type' => 'application/pdf']
             )->deleteFileAfterSend(true);
-
         } catch (\Exception $e) {
+            Log::error('Bundle export failed in controller', [
+                'bundle_id' => $bundle->id,
+                'error' => $e->getMessage()
+            ]);
+
             return response()->json([
                 'error' => 'Export failed',
                 'message' => $e->getMessage()
             ], 500);
         }
     }
-
-   /**
+    /**
      * Display a listing of bundles for the authenticated user.
      */
     public function index(Request $request): JsonResponse
@@ -186,8 +185,8 @@ class BundleController extends Controller
             'bundle' => $bundle
         ]);
     }
-    
-     /**
+
+    /**
      * Update bundle metadata (headers/footers)
      * PATCH /api/bundles/{bundle}/metadata
      */
