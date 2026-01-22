@@ -26,8 +26,6 @@ class BundleExportService
         Log::info('Starting bundle export', [
             'bundle_id' => $bundle->id,
             'include_index' => $includeIndex,
-            'index_path' => $bundle->metadata['index_path'] ?? null
-
         ]);
 
         try {
@@ -39,17 +37,25 @@ class BundleExportService
 
             $globalPageNumber = 1;
             $filePageMapping = [];
-            $index_path = $bundle->metadata['index_path'] ?? null;
+            $metadata = $bundle->metadata ?? [];
+            $index_path = $metadata['index_path'] ?? null;
+
+            $indexPageCount = 0;
+            $linkPositions = [];
+
             // Add index pages if requested and available
             if ($includeIndex && $index_path) {
                 $indexPageCount = $this->addIndexPages($pdf, $bundle);
                 $globalPageNumber += $indexPageCount;
+
+                // Get link positions from metadata
+                $linkPositions = $metadata['index_link_positions'] ?? [];
             }
 
             // Calculate total pages for footer
             $totalPages = $this->calculateTotalPages($bundle);
             if ($includeIndex && $index_path) {
-                $totalPages += $this->countIndexPages($bundle);
+                $totalPages += $indexPageCount;
             }
 
             // Get root-level documents in order
@@ -59,7 +65,6 @@ class BundleExportService
                 ->get();
 
             // Get bundle metadata for headers/footers
-            $metadata = $bundle->metadata ?? [];
             $headerFooter = [
                 'headerLeft' => $metadata['header_left'] ?? '',
                 'headerRight' => $metadata['header_right'] ?? '',
@@ -78,6 +83,11 @@ class BundleExportService
                 );
 
                 $globalPageNumber += $pageCount;
+            }
+
+            // ✅ Recreate clickable links using STORED POSITIONS
+            if ($includeIndex && !empty($linkPositions)) {
+                $this->recreateIndexLinks($pdf, $linkPositions);
             }
 
             // Get highlights from database
@@ -108,6 +118,55 @@ class BundleExportService
                 'trace' => $e->getTraceAsString()
             ]);
             throw $e;
+        }
+    }
+
+    /**
+     * Recreate clickable links using EXACT stored positions
+     */
+    private function recreateIndexLinks(Fpdi $pdf, array $linkPositions): void
+    {
+        try {
+            Log::info('Recreating index links from stored positions', [
+                'positions' => count($linkPositions)
+            ]);
+
+            foreach ($linkPositions as $position) {
+                if (!isset($position['target_page']) || $position['target_page'] === null) {
+                    continue;
+                }
+
+                $page = $position['page'];
+                $y = $position['y'];
+                $height = $position['height'];
+                $indent = $position['indent'];
+                $targetPage = $position['target_page'];
+
+                // Switch to the correct index page
+                $pdf->setPage($page);
+
+                // Calculate clickable area
+                $x = 20 + $indent;
+                $width = $pdf->getPageWidth() - $x - 50; // Leave space for page numbers
+
+                // Add clickable link annotation
+                $pdf->Link($x, $y, $width, $height, $targetPage);
+
+                Log::debug('Link created', [
+                    'index_page' => $page,
+                    'y' => $y,
+                    'target_page' => $targetPage
+                ]);
+            }
+
+            Log::info('Index links recreated successfully', [
+                'total_links' => count($linkPositions)
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Failed to recreate index links', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
         }
     }
 
@@ -171,6 +230,7 @@ class BundleExportService
 
         return $grouped;
     }
+
     /**
      * Process document recursively (handles folders and files)
      */
@@ -245,7 +305,7 @@ class BundleExportService
      */
     private function countIndexPages(Bundle $bundle): int
     {
-        $index_path = $index_path = $bundle->metadata['index_path'] ?? null;
+        $index_path = $bundle->metadata['index_path'] ?? null;
         if (!$index_path || !Storage::exists($index_path)) {
             return 0;
         }
@@ -267,7 +327,7 @@ class BundleExportService
      */
     private function addIndexPages(Fpdi $pdf, Bundle $bundle): int
     {
-        $index_path = $index_path = $bundle->metadata['index_path'] ?? null;
+        $index_path = $bundle->metadata['index_path'] ?? null;
 
         try {
             if (!$index_path || !Storage::exists($index_path)) {
@@ -432,8 +492,10 @@ class BundleExportService
         array $filePageMapping
     ): void {
         try {
-            Log::info("Highlight: ", $highlights);
+            Log::info('Adding highlights to PDF');
+
             foreach ($highlights as $documentId => $documentHighlights) {
+
                 if (!isset($filePageMapping[$documentId])) {
                     continue;
                 }
@@ -441,37 +503,66 @@ class BundleExportService
                 $mapping = $filePageMapping[$documentId];
 
                 foreach ($documentHighlights as $pageNum => $pageHighlights) {
-                    // Calculate global page number
+
+                    // Calculate global page number (merged PDF page index)
                     $globalPage = $mapping['start'] + ($pageNum - 1);
 
-                    // Set page
+                    if ($globalPage < 1 || $globalPage > $pdf->getNumPages()) {
+                        continue;
+                    }
+
+                    // Move to correct page
                     $pdf->setPage($globalPage);
 
-                    // Add highlight rectangles
+                    // Get page height (TCPDF coordinate space)
+                    $pageHeight = $pdf->getPageHeight();
+
+                    // Semi-transparent highlights
                     $pdf->SetAlpha(0.3);
 
                     foreach ($pageHighlights as $highlight) {
-                        // Log::info("Highlight color: ", [$highlight['color']['hex'] ?? '#FFFF00']);
-                        $color = $this->parseColor($highlight['color']['hex'] ?? '#FFFF00' ?? '#FFFF00');
+
+                        if (
+                            !isset(
+                                $highlight['x'],
+                                $highlight['y'],
+                                $highlight['width'],
+                                $highlight['height']
+                            )
+                        ) {
+                            continue;
+                        }
+
+                        // Parse highlight color
+                        $color = $this->parseColor(
+                            $highlight['color'] ?? '#FFFF00'
+                        );
 
                         $pdf->SetFillColor($color['r'], $color['g'], $color['b']);
-                        $pdf->Rect(
-                            $highlight['x'],
-                            $highlight['y'],
-                            $highlight['width'],
-                            $highlight['height'],
-                            'F'
-                        );
+
+                        $pageHeightMm = $pdf->getPageHeight();
+
+                        $x = $this->ptToMm($highlight['x']);
+                        $y = $this->ptToMm($highlight['y']);
+                        $w = $this->ptToMm($highlight['width']);
+                        $h = $this->ptToMm($highlight['height']);
+
+                        $convertedY = $pageHeightMm - $y - $h;
+
+                        // Draw highlight rectangle
+                        $pdf->Rect($x, $convertedY, $w, $h, 'F');
                     }
 
+                    // Reset alpha
                     $pdf->SetAlpha(1);
                 }
             }
 
             Log::info('Highlights added successfully');
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::warning('Failed to add highlights', [
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
         }
     }
@@ -565,5 +656,13 @@ class BundleExportService
         $name = preg_replace('/[^a-zA-Z0-9_-]/', '_', $bundle->name ?? 'bundle');
         $timestamp = now()->format('Y-m-d_His');
         return "{$name}_{$timestamp}.pdf";
+    }
+
+    /**
+     * Convert PDF points (dots) to millimeters
+     */
+    private function ptToMm(float $pt): float
+    {
+        return $pt * 25.4 / 72;
     }
 }

@@ -25,7 +25,6 @@ class IndexGenerationService
         try {
             Log::info('Generating index for bundle', ['bundle_id' => $bundle->id]);
 
-            // Get all documents with their hierarchy
             $documents = Document::where('bundle_id', $bundle->id)
                 ->orderBy('order')
                 ->get();
@@ -35,17 +34,16 @@ class IndexGenerationService
                 return null;
             }
 
-            // Build tree structure
             $tree = $this->treeBuilder->build($documents);
 
             // PASS 1: Create temporary index to determine page count
             $tempPdf = $this->createTemporaryIndexPdf($bundle, $tree);
             $indexPageCount = $tempPdf->getNumPages();
-            
+
             Log::info('Index will occupy pages', ['pages' => $indexPageCount]);
 
             // PASS 2: Generate index entries with CORRECT page numbers
-            $currentPage = $indexPageCount + 1; // Documents start after index pages
+            $currentPage = $indexPageCount + 1;
             $indexEntries = $this->buildIndexEntries($tree, $bundle, $currentPage);
 
             if (empty($indexEntries)) {
@@ -53,8 +51,10 @@ class IndexGenerationService
                 return null;
             }
 
-            // PASS 3: Create final PDF with correct page numbers and links
-            $pdf = $this->createIndexPdf($bundle, $indexEntries);
+            // PASS 3: Create final PDF with positions tracked
+            $result = $this->createIndexPdf($bundle, $indexEntries);
+            $pdf = $result['pdf'];
+            $linkPositions = $result['positions'];
 
             // Save to storage
             $filename = $this->getIndexFilename($bundle);
@@ -62,14 +62,15 @@ class IndexGenerationService
 
             Storage::put($path, $pdf->Output('', 'S'));
 
-            // Update bundle metadata with index info
-            $this->updateBundleIndexMetadata($bundle, $path, $indexEntries);
+            // Update bundle metadata with index info AND link positions
+            $this->updateBundleIndexMetadata($bundle, $path, $indexEntries, $linkPositions);
 
             Log::info('Index generated successfully', [
                 'bundle_id' => $bundle->id,
                 'path' => $path,
                 'index_pages' => $indexPageCount,
-                'entries' => count($indexEntries)
+                'entries' => count($indexEntries),
+                'link_positions' => count($linkPositions)
             ]);
 
             return $path;
@@ -84,30 +85,23 @@ class IndexGenerationService
     }
 
     /**
-     * Create temporary index PDF to determine page count (without page numbers)
+     * Update bundle metadata with index information
      */
-    private function createTemporaryIndexPdf(Bundle $bundle, array $tree): Fpdi
-    {
-        $pdf = new Fpdi();
-        $pdf->setPrintHeader(false);
-        $pdf->setPrintFooter(false);
-        $pdf->SetMargins(20, 20, 20);
-        $pdf->SetAutoPageBreak(true, 20);
-        
-        $pdf->AddPage();
+    private function updateBundleIndexMetadata(
+        Bundle $bundle,
+        string $path,
+        array $entries,
+        array $linkPositions
+    ): void {
+        $metadata = $bundle->metadata ?? [];
+        $metadata['index_path'] = $path;
+        $metadata['index_entries'] = $entries;
+        $metadata['index_link_positions'] = $linkPositions; // ← NEW!
+        $metadata['index_updated_at'] = now()->toISOString();
 
-        // Title
-        $pdf->SetFont('helvetica', 'B', 30);
-        $pdf->SetTextColor(0, 0, 0);
-        $pdf->Cell(0, 15, 'TABLE OF CONTENTS', 0, 1, 'C');
-        $pdf->Ln(10);
-
-        // Render entries without page numbers (just to measure space)
-        $this->renderTreeEntries($pdf, $tree, 0);
-
-        return $pdf;
+        $bundle->update(['metadata' => $metadata]);
     }
-
+    
     /**
      * Render tree entries for temporary PDF (no page numbers, no links)
      */
@@ -116,7 +110,7 @@ class IndexGenerationService
         foreach ($tree as $item) {
             if ($item['type'] === 'folder') {
                 $this->renderTempFolderEntry($pdf, $item, $level);
-                
+
                 if (!empty($item['children'])) {
                     $this->renderTreeEntries($pdf, $item['children'], $level + 1);
                 }
@@ -133,13 +127,13 @@ class IndexGenerationService
     {
         $rowHeight = 8;
         $this->checkPageBreak($pdf, $rowHeight);
-        
+
         $indent = $level * 10;
-        
+
         if ($pdf->GetY() > 50) {
             $pdf->Ln(2);
         }
-        
+
         $pdf->SetFont('helvetica', 'B', 12);
         $pdf->SetX(20 + $indent);
         $pdf->Cell(0, 8, strtoupper($item['name']), 0, 1);
@@ -152,9 +146,9 @@ class IndexGenerationService
     {
         $rowHeight = 6;
         $this->checkPageBreak($pdf, $rowHeight);
-        
+
         $indent = $level * 10;
-        
+
         $pdf->SetFont('helvetica', '', 10.5);
         $pdf->SetX(20 + $indent);
         $pdf->Cell(0, 6, $item['name'], 0, 1);
@@ -168,7 +162,7 @@ class IndexGenerationService
         $bottomMargin = 20;
         $currentY = $pdf->GetY();
         $pageHeight = $pdf->getPageHeight();
-        
+
         // If row would cross bottom margin, start new page
         if ($currentY + $rowHeight > ($pageHeight - $bottomMargin)) {
             $pdf->AddPage();
@@ -179,9 +173,9 @@ class IndexGenerationService
      * Build index entries from tree structure with page numbers and index numbers
      */
     private function buildIndexEntries(
-        array $tree, 
-        Bundle $bundle, 
-        int &$currentPage, 
+        array $tree,
+        Bundle $bundle,
+        int &$currentPage,
         int $level = 0,
         array &$indexCounter = [0]
     ): array {
@@ -194,7 +188,7 @@ class IndexGenerationService
                     $indexCounter[$level] = 0;
                 }
                 $indexCounter[$level]++;
-                
+
                 // Reset counters for deeper levels
                 for ($i = $level + 1; $i < count($indexCounter); $i++) {
                     $indexCounter[$i] = 0;
@@ -234,7 +228,7 @@ class IndexGenerationService
                     $indexCounter[$level] = 0;
                 }
                 $indexCounter[$level]++;
-                
+
                 // Reset counters for deeper levels
                 for ($i = $level + 1; $i < count($indexCounter); $i++) {
                     $indexCounter[$i] = 0;
@@ -245,12 +239,12 @@ class IndexGenerationService
 
                 // Add file with page number and range
                 $document = Document::find($item['id']);
-                
+
                 if ($document && Storage::exists($document->storage_path)) {
                     $pageCount = $this->getDocumentPageCount($document);
                     $startPage = $currentPage;
                     $endPage = $currentPage + $pageCount - 1;
-                    
+
                     $entries[] = [
                         'type' => 'file',
                         'name' => $item['name'],
@@ -303,16 +297,16 @@ class IndexGenerationService
     }
 
     /**
-     * Create the index PDF with styling and hyperlinks
+     * Create the index PDF with styling and TRACK POSITIONS
      */
-    private function createIndexPdf(Bundle $bundle, array $entries): Fpdi
+    private function createIndexPdf(Bundle $bundle, array $entries): array
     {
         $pdf = new Fpdi();
         $pdf->setPrintHeader(false);
         $pdf->setPrintFooter(false);
         $pdf->SetMargins(20, 20, 20);
         $pdf->SetAutoPageBreak(true, 20);
-        
+
         $pdf->AddPage();
 
         // Title
@@ -321,97 +315,93 @@ class IndexGenerationService
         $pdf->Cell(0, 15, 'TABLE OF CONTENTS', 0, 1, 'C');
         $pdf->Ln(10);
 
-        // Create links for all entries first
-        $links = [];
-        foreach ($entries as $index => $entry) {
-            if ($entry['page'] !== null) {
-                $links[$index] = $pdf->AddLink();
-            }
-        }
+        // Track where each entry is rendered for link recreation
+        $linkPositions = [];
 
-        // Render entries with links
+        // Render entries and track positions
         foreach ($entries as $index => $entry) {
+            $beforeY = $pdf->GetY();
+            $beforePage = $pdf->getPage();
+
             if ($entry['type'] === 'folder') {
-                $this->addFolderEntry($pdf, $entry, $links[$index] ?? null);
+                $this->addFolderEntry($pdf, $entry, null);
+                $rowHeight = 8;
+                $indent = $entry['level'] * 10;
             } else {
-                $this->addFileEntry($pdf, $entry, $links[$index] ?? null);
+                $this->addFileEntry($pdf, $entry, null);
+                $rowHeight = 6;
+                $indent = $entry['level'] * 10;
             }
+
+            // Store the position where this entry was rendered
+            $linkPositions[] = [
+                'page' => $beforePage,
+                'y' => $beforeY,
+                'height' => $rowHeight,
+                'indent' => $indent,
+                'target_page' => $entry['page'],
+                'entry_index' => $index
+            ];
         }
 
-        // Set link destinations
-        foreach ($entries as $index => $entry) {
-            if ($entry['page'] !== null && isset($links[$index])) {
-                $pdf->SetLink($links[$index], 0, $entry['page']);
-            }
-        }
-
-        return $pdf;
+        return ['pdf' => $pdf, 'positions' => $linkPositions];
     }
-
     /**
-     * Add folder entry (section heading) with index number and hyperlink
+     * Add folder entry (section heading) - NO LINK
      */
     private function addFolderEntry(Fpdi $pdf, array $entry, ?int $link = null): void
     {
         $rowHeight = 8;
         $this->checkPageBreak($pdf, $rowHeight);
-        
+
         $indent = $entry['level'] * 10;
-        
+
         // Add spacing if not at top of page
         if ($pdf->GetY() > 50) {
             $pdf->Ln(2);
         }
-        
+
         $pdf->SetFont('helvetica', 'B', 12);
         $pdf->SetTextColor(40, 40, 40);
         $pdf->SetX(20 + $indent);
-        
+
         // Format: "1.2 FOLDER NAME"
         $folderTitle = $entry['index_number'] . '. ' . strtoupper($entry['name']);
-        
-        // Add clickable link to folder's first page
-        if ($link !== null) {
-            $pdf->Cell(0, 8, $folderTitle, 0, 1, 'L', false, $link);
-        } else {
-            $pdf->Cell(0, 8, $folderTitle, 0, 1);
-        }
+
+        // ❌ REMOVE link parameter from Cell()
+        $pdf->Cell(0, 8, $folderTitle, 0, 1, 'L'); // ← No link!
     }
 
     /**
-     * Add file entry with index number, page range and hyperlink
+     * Add file entry - NO LINK
      */
     private function addFileEntry(Fpdi $pdf, array $entry, ?int $link = null): void
     {
         $rowHeight = 6;
         $this->checkPageBreak($pdf, $rowHeight);
-        
+
         $indent = $entry['level'] * 10;
-        
+
         $pdf->SetFont('helvetica', '', 10.5);
         $pdf->SetTextColor(60, 60, 60);
-        
+
         // Calculate positions
         $x = 20 + $indent;
         $y = $pdf->GetY();
         $pageWidth = $pdf->getPageWidth() - 40;
-        
-        // File name with index number (with hyperlink)
+
+        // File name with index number (NO hyperlink)
         $pdf->SetX($x);
         $nameWidth = $pageWidth - 50;
-        
+
         // Format: "1.2.3 Document Name"
         $fileName = $entry['index_number'] . '. ' . $entry['name'];
         $truncatedName = $this->truncateFileName($fileName, $nameWidth);
-        
-        // Add clickable link to first page of document
-        if ($link !== null) {
-            $pdf->Cell($nameWidth, 6, $truncatedName, 0, 0, 'L', false, $link);
-        } else {
-            $pdf->Cell($nameWidth, 6, $truncatedName, 0, 0, 'L');
-        }
-        
-        // Page range (aligned right) - now SAFE from splitting
+
+        // ❌ REMOVE link parameter from Cell()
+        $pdf->Cell($nameWidth, 6, $truncatedName, 0, 0, 'L'); // ← No link!
+
+        // Page range (aligned right)
         $pdf->SetXY($pdf->getPageWidth() - 50, $y);
         $pdf->SetFont('helvetica', '', 10);
         $pdf->SetTextColor(100, 100, 100);
@@ -463,21 +453,8 @@ class IndexGenerationService
     {
         $filename = $this->getIndexFilename($bundle);
         $path = self::INDEX_CACHE_PATH . '/' . $filename;
-        
-        return Storage::exists($path) ? $path : null;
-    }
 
-    /**
-     * Update bundle metadata with index information
-     */
-    private function updateBundleIndexMetadata(Bundle $bundle, string $path, array $entries): void
-    {
-        $metadata = $bundle->metadata ?? [];
-        $metadata['index_path'] = $path;
-        $metadata['index_entries'] = $entries;
-        $metadata['index_updated_at'] = now()->toISOString();
-        
-        $bundle->update(['metadata' => $metadata]);
+        return Storage::exists($path) ? $path : null;
     }
 
     /**
@@ -486,10 +463,10 @@ class IndexGenerationService
     public function deleteIndex(Bundle $bundle): void
     {
         $path = $this->getIndexPath($bundle);
-        
+
         if ($path && Storage::exists($path)) {
             Storage::delete($path);
-            
+
             // Update metadata
             $metadata = $bundle->metadata ?? [];
             unset($metadata['index_path'], $metadata['index_entries'], $metadata['index_updated_at']);
@@ -503,7 +480,7 @@ class IndexGenerationService
     public function needsRegeneration(Bundle $bundle): bool
     {
         $metadata = $bundle->metadata ?? [];
-        
+
         if (!isset($metadata['index_path']) || !isset($metadata['index_updated_at'])) {
             return true;
         }
@@ -528,5 +505,32 @@ class IndexGenerationService
     {
         $metadata = $bundle->metadata ?? [];
         return $metadata['index_entries'] ?? [];
+    }
+
+    /**
+     * PASS 1: Create a temporary index PDF to calculate page count
+     * - No links
+     * - No page numbers
+     * - Just layout
+     */
+    private function createTemporaryIndexPdf(Bundle $bundle, array $tree): Fpdi
+    {
+        $pdf = new Fpdi();
+        $pdf->setPrintHeader(false);
+        $pdf->setPrintFooter(false);
+        $pdf->SetMargins(20, 20, 20);
+        $pdf->SetAutoPageBreak(true, 20);
+
+        $pdf->AddPage();
+
+        // Title (must match final index exactly)
+        $pdf->SetFont('helvetica', 'B', 30);
+        $pdf->Cell(0, 15, 'TABLE OF CONTENTS', 0, 1, 'C');
+        $pdf->Ln(10);
+
+        // Render tree entries (folders + files)
+        $this->renderTreeEntries($pdf, $tree, 0);
+
+        return $pdf;
     }
 }
