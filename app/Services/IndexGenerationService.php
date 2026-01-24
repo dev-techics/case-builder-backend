@@ -101,7 +101,7 @@ class IndexGenerationService
 
         $bundle->update(['metadata' => $metadata]);
     }
-    
+
     /**
      * Render tree entries for temporary PDF (no page numbers, no links)
      */
@@ -413,17 +413,34 @@ class IndexGenerationService
      */
     private function getDocumentPageCount(Document $document): int
     {
+        $path = Storage::path($document->storage_path);
         try {
             $pdf = new Fpdi();
-            $path = Storage::path($document->storage_path);
             return $pdf->setSourceFile($path);
-        } catch (\Exception $e) {
-            Log::warning('Could not get page count', [
+        } catch (\Throwable $e) {
+            Log::warning('Could not get page count. FPDI failed, falling back to pdfinfo', [
                 'document_id' => $document->id,
                 'error' => $e->getMessage()
             ]);
-            return 0;
         }
+
+        // 2️⃣ Fallback: Poppler (pdfinfo)
+        try {
+            $escapedPath = escapeshellarg($path);
+            $output = shell_exec("pdfinfo $escapedPath 2>/dev/null");
+
+            if ($output && preg_match('/Pages:\s+(\d+)/', $output, $matches)) {
+                return (int) $matches[1];
+            }
+        } catch (\Throwable $e) {
+            Log::warning('pdfinfo failed', [
+                'document_id' => $document->id,
+                'error' => $e->getMessage()
+            ]);
+        }
+
+        // 3️⃣ Total failure
+        return 0;
     }
 
     /**

@@ -258,7 +258,7 @@ class BundleExportService
             foreach ($children as $child) {
                 $pageCount = $this->processDocument(
                     $pdf,
-                    $child,
+                    $child,  // ✅ FIXED: Pass child, not parent!
                     $globalPageNumber,
                     $totalPages,
                     $filePageMapping,
@@ -370,6 +370,7 @@ class BundleExportService
 
     /**
      * Add document pages with headers, footers, and page numbers
+     * IMPROVED: Better error handling and multiple conversion attempts
      */
     private function addDocumentPages(
         Fpdi $pdf,
@@ -378,39 +379,78 @@ class BundleExportService
         int $totalPages,
         array $headerFooter
     ): int {
-        // NULL SAFETY CHECKS
         if (empty($document->storage_path)) {
-            Log::warning('Document has no storage path, skipping', [
-                'document_id' => $document->id,
-                'name' => $document->name
+            Log::warning('Document has no storage path', [
+                'document_id' => $document->id
             ]);
             return 0;
         }
 
         if (!Storage::exists($document->storage_path)) {
-            Log::warning('Document file not found, skipping', [
+            Log::warning('Document file not found', [
                 'document_id' => $document->id,
                 'path' => $document->storage_path
             ]);
             return 0;
         }
 
-        try {
-            $sourcePath = Storage::path($document->storage_path);
+        $originalPath = Storage::path($document->storage_path);
+        $sourcePath = $originalPath;
+        $convertedPath = null;
 
-            // Verify physical file
-            if (!file_exists($sourcePath)) {
-                Log::warning('Physical file does not exist', [
-                    'document_id' => $document->id,
-                    'path' => $sourcePath
+        // Try to get page count and import
+        try {
+            $pageCount = $pdf->setSourceFile($sourcePath);
+        } catch (\Throwable $e) {
+            Log::warning('FPDI failed on original PDF, attempting conversion', [
+                'document_id' => $document->id,
+                'error' => $e->getMessage()
+            ]);
+
+            // Try pdftocairo first (best quality)
+            $convertedPath = $this->convertPdfWithCairo($originalPath);
+            
+            if (!$convertedPath) {
+                // Fallback to Ghostscript
+                Log::info('pdftocairo failed, trying Ghostscript', [
+                    'document_id' => $document->id
+                ]);
+                $convertedPath = $this->convertPdfWithGhostscript($originalPath);
+            }
+
+            if (!$convertedPath) {
+                Log::error('All PDF conversion methods failed', [
+                    'document_id' => $document->id
                 ]);
                 return 0;
             }
 
-            // Import original PDF
-            $pageCount = $pdf->setSourceFile($sourcePath);
+            try {
+                $sourcePath = $convertedPath;
+                $pageCount = $pdf->setSourceFile($sourcePath);
+                
+                Log::info('PDF conversion successful', [
+                    'document_id' => $document->id,
+                    'pages' => $pageCount
+                ]);
+            } catch (\Throwable $e) {
+                Log::error('FPDI failed even after conversion', [
+                    'document_id' => $document->id,
+                    'error' => $e->getMessage()
+                ]);
+                
+                // Cleanup converted file
+                if ($convertedPath && file_exists($convertedPath)) {
+                    @unlink($convertedPath);
+                }
+                
+                return 0;
+            }
+        }
 
-            for ($i = 1; $i <= $pageCount; $i++) {
+        // Import pages
+        for ($i = 1; $i <= $pageCount; $i++) {
+            try {
                 $tpl = $pdf->importPage($i);
                 $size = $pdf->getTemplateSize($tpl);
 
@@ -419,10 +459,8 @@ class BundleExportService
                     [$size['width'], $size['height']]
                 );
 
-                // Use template
                 $pdf->useTemplate($tpl, 0, 0, $size['width'], $size['height']);
 
-                // Add headers, footers, and page numbers
                 $this->addPageOverlays(
                     $pdf,
                     $size,
@@ -432,16 +470,21 @@ class BundleExportService
                 );
 
                 $globalPageNumber++;
+            } catch (\Throwable $e) {
+                Log::error('Failed to import page', [
+                    'document_id' => $document->id,
+                    'page' => $i,
+                    'error' => $e->getMessage()
+                ]);
             }
-
-            return $pageCount;
-        } catch (\Exception $e) {
-            Log::error('Failed to add document pages', [
-                'document_id' => $document->id,
-                'error' => $e->getMessage()
-            ]);
-            return 0;
         }
+
+        // Cleanup converted file if exists
+        if ($convertedPath && file_exists($convertedPath)) {
+            @unlink($convertedPath);
+        }
+
+        return $pageCount;
     }
 
     /**
@@ -607,16 +650,20 @@ class BundleExportService
             return 0;
         }
 
+        $path = Storage::path($document->storage_path);
+
         try {
             $pdf = new Fpdi();
-            return $pdf->setSourceFile(Storage::path($document->storage_path));
-        } catch (\Exception $e) {
-            Log::warning('Failed to count pages', [
+            return $pdf->setSourceFile($path);
+        } catch (\Throwable $e) {
+            Log::warning('Could not get page count with FPDI, falling back to pdfinfo', [
                 'document_id' => $document->id,
                 'error' => $e->getMessage()
             ]);
-            return 0;
         }
+
+        // Fallback: pdfinfo
+        return $this->getPageCountWithPdfInfo($path);
     }
 
     /**
@@ -664,5 +711,119 @@ class BundleExportService
     private function ptToMm(float $pt): float
     {
         return $pt * 25.4 / 72;
+    }
+
+    /**
+     * Convert PDF using pdftocairo (Poppler - best quality)
+     */
+    private function convertPdfWithCairo(string $sourcePath): ?string
+    {
+        if (!function_exists('shell_exec')) {
+            return null;
+        }
+
+        // Check if pdftocairo is available
+        $checkCommand = "which pdftocairo 2>/dev/null";
+        if (empty(shell_exec($checkCommand))) {
+            Log::warning('pdftocairo not available');
+            return null;
+        }
+
+        $outputPath = storage_path('app/tmp/cairo_' . md5($sourcePath . time()) . '.pdf');
+
+        // Ensure temp directory exists
+        $tmpDir = dirname($outputPath);
+        if (!is_dir($tmpDir)) {
+            mkdir($tmpDir, 0755, true);
+        }
+
+        $source = escapeshellarg($sourcePath);
+        $output = escapeshellarg($outputPath);
+
+        $command = "pdftocairo -pdf $source $output 2>&1";
+        $result = shell_exec($command);
+
+        if (file_exists($outputPath) && filesize($outputPath) > 0) {
+            Log::info('pdftocairo conversion successful', [
+                'output' => $outputPath,
+                'size' => filesize($outputPath)
+            ]);
+            return $outputPath;
+        }
+
+        Log::warning('pdftocairo conversion failed', [
+            'command' => $command,
+            'result' => $result
+        ]);
+
+        return null;
+    }
+
+    /**
+     * Convert PDF using Ghostscript (fallback)
+     */
+    private function convertPdfWithGhostscript(string $sourcePath): ?string
+    {
+        if (!function_exists('shell_exec')) {
+            return null;
+        }
+
+        // Check if ghostscript is available
+        $checkCommand = "which gs 2>/dev/null";
+        if (empty(shell_exec($checkCommand))) {
+            Log::warning('Ghostscript not available');
+            return null;
+        }
+
+        $outputPath = storage_path('app/tmp/gs_' . md5($sourcePath . time()) . '.pdf');
+
+        // Ensure temp directory exists
+        $tmpDir = dirname($outputPath);
+        if (!is_dir($tmpDir)) {
+            mkdir($tmpDir, 0755, true);
+        }
+
+        $source = escapeshellarg($sourcePath);
+        $output = escapeshellarg($outputPath);
+
+        $command = "gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dNOPAUSE -dQUIET -dBATCH -sOutputFile=$output $source 2>&1";
+        $result = shell_exec($command);
+
+        if (file_exists($outputPath) && filesize($outputPath) > 0) {
+            Log::info('Ghostscript conversion successful', [
+                'output' => $outputPath,
+                'size' => filesize($outputPath)
+            ]);
+            return $outputPath;
+        }
+
+        Log::warning('Ghostscript conversion failed', [
+            'command' => $command,
+            'result' => $result
+        ]);
+
+        return null;
+    }
+
+    /**
+     * Get page count using pdfinfo (Poppler)
+     */
+    private function getPageCountWithPdfInfo(string $path): int
+    {
+        try {
+            $escapedPath = escapeshellarg($path);
+            $output = shell_exec("pdfinfo $escapedPath 2>/dev/null");
+
+            if ($output && preg_match('/Pages:\s+(\d+)/', $output, $matches)) {
+                return (int) $matches[1];
+            }
+        } catch (\Throwable $e) {
+            Log::warning('pdfinfo failed', [
+                'path' => $path,
+                'error' => $e->getMessage()
+            ]);
+        }
+
+        return 0;
     }
 }
