@@ -54,6 +54,7 @@ class BundleExportService
 
             // Calculate total pages for footer
             $totalPages = $this->calculateTotalPages($bundle);
+
             if ($includeIndex && $index_path) {
                 $totalPages += $indexPageCount;
             }
@@ -85,7 +86,7 @@ class BundleExportService
                 $globalPageNumber += $pageCount;
             }
 
-            // ✅ Recreate clickable links using STORED POSITIONS
+            // Recreate clickable links using STORED POSITIONS
             if ($includeIndex && !empty($linkPositions)) {
                 $this->recreateIndexLinks($pdf, $linkPositions);
             }
@@ -126,48 +127,53 @@ class BundleExportService
      */
     private function recreateIndexLinks(Fpdi $pdf, array $linkPositions): void
     {
-        try {
-            Log::info('Recreating index links from stored positions', [
-                'positions' => count($linkPositions)
-            ]);
+        Log::info('Recreating index links', [
+            'positions' => count($linkPositions)
+        ]);
 
-            foreach ($linkPositions as $position) {
-                if (!isset($position['target_page']) || $position['target_page'] === null) {
-                    continue;
-                }
-
-                $page = $position['page'];
-                $y = $position['y'];
-                $height = $position['height'];
-                $indent = $position['indent'];
-                $targetPage = $position['target_page'];
-
-                // Switch to the correct index page
-                $pdf->setPage($page);
-
-                // Calculate clickable area
-                $x = 20 + $indent;
-                $width = $pdf->getPageWidth() - $x - 50; // Leave space for page numbers
-
-                // Add clickable link annotation
-                $pdf->Link($x, $y, $width, $height, $targetPage);
-
-                Log::debug('Link created', [
-                    'index_page' => $page,
-                    'y' => $y,
-                    'target_page' => $targetPage
-                ]);
+        foreach ($linkPositions as $position) {
+            if (empty($position['target_page'])) {
+                continue;
             }
 
-            Log::info('Index links recreated successfully', [
-                'total_links' => count($linkPositions)
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Failed to recreate index links', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
+            $indexPage  = (int) $position['page'];
+            $targetPage = (int) $position['target_page'];
+
+            if ($targetPage <= 0) {
+                continue;
+            }
+
+            // Create a TCPDF internal link
+            $linkId = $pdf->AddLink();
+
+            // Associate link with target page (top of page)
+            $pdf->SetLink($linkId, 0, $targetPage);
+
+            // Switch to index page
+            $pdf->setPage($indexPage);
+
+            $x      = 20 + (float) $position['indent'];
+            $y      = (float) $position['y'];
+            $height = (float) $position['height'];
+            $width  = $pdf->getPageWidth() - $x - 50;
+
+            // Optional debug rectangle
+            // $pdf->SetAlpha(0.15);
+            // $pdf->SetFillColor(0, 120, 255);
+            // $pdf->Rect($x, $y, $width, $height, 'F');
+            // $pdf->SetAlpha(1);
+
+            // Correct internal link
+            $pdf->Link($x, $y, $width, $height, $linkId);
+
+            Log::debug('Index link created', [
+                'index_page'  => $indexPage,
+                'target_page' => $targetPage,
+                'link_id'     => $linkId,
             ]);
         }
+
+        Log::info('Index links recreated successfully');
     }
 
     /**
@@ -256,20 +262,20 @@ class BundleExportService
                 ->get();
 
             foreach ($children as $child) {
-                $pageCount = $this->processDocument(
+                $this->processDocument(
                     $pdf,
-                    $child,  // ✅ FIXED: Pass child, not parent!
+                    $child,
                     $globalPageNumber,
                     $totalPages,
                     $filePageMapping,
                     $headerFooter
                 );
-
-                $totalPageCount += $pageCount;
             }
 
-            return $totalPageCount;
+            // IMPORTANT: folders do NOT add pages
+            return 0;
         }
+
 
         // It's a file - add its pages
         $startPage = $globalPageNumber;
@@ -370,7 +376,7 @@ class BundleExportService
 
     /**
      * Add document pages with headers, footers, and page numbers
-     * IMPROVED: Better error handling and multiple conversion attempts
+     * IMPROVED: Enhanced error handling with multiple conversion strategies
      */
     private function addDocumentPages(
         Fpdi $pdf,
@@ -407,12 +413,20 @@ class BundleExportService
                 'error' => $e->getMessage()
             ]);
 
-            // Try pdftocairo first (best quality)
-            $convertedPath = $this->convertPdfWithCairo($originalPath);
-            
+            // Strategy 1: Enhanced Ghostscript (most compatible)
+            $convertedPath = $this->convertPdfWithEnhancedGhostscript($originalPath);
+
             if (!$convertedPath) {
-                // Fallback to Ghostscript
-                Log::info('pdftocairo failed, trying Ghostscript', [
+                // Strategy 2: pdftocairo
+                Log::info('Enhanced Ghostscript failed, trying pdftocairo', [
+                    'document_id' => $document->id
+                ]);
+                $convertedPath = $this->convertPdfWithCairo($originalPath);
+            }
+
+            if (!$convertedPath) {
+                // Strategy 3: Basic Ghostscript
+                Log::info('pdftocairo failed, trying basic Ghostscript', [
                     'document_id' => $document->id
                 ]);
                 $convertedPath = $this->convertPdfWithGhostscript($originalPath);
@@ -428,7 +442,7 @@ class BundleExportService
             try {
                 $sourcePath = $convertedPath;
                 $pageCount = $pdf->setSourceFile($sourcePath);
-                
+
                 Log::info('PDF conversion successful', [
                     'document_id' => $document->id,
                     'pages' => $pageCount
@@ -438,12 +452,12 @@ class BundleExportService
                     'document_id' => $document->id,
                     'error' => $e->getMessage()
                 ]);
-                
+
                 // Cleanup converted file
                 if ($convertedPath && file_exists($convertedPath)) {
                     @unlink($convertedPath);
                 }
-                
+
                 return 0;
             }
         }
@@ -714,7 +728,75 @@ class BundleExportService
     }
 
     /**
-     * Convert PDF using pdftocairo (Poppler - best quality)
+     * Convert PDF using ENHANCED Ghostscript with maximum compatibility
+     * This is the MOST COMPATIBLE method for FPDI
+     */
+    private function convertPdfWithEnhancedGhostscript(string $sourcePath): ?string
+    {
+        if (!function_exists('shell_exec')) {
+            Log::warning('shell_exec not available');
+            return null;
+        }
+
+        // Check if ghostscript is available
+        $checkCommand = "which gs 2>/dev/null";
+        if (empty(shell_exec($checkCommand))) {
+            Log::warning('Ghostscript not available');
+            return null;
+        }
+
+        $outputPath = storage_path('app/tmp/gs_enhanced_' . md5($sourcePath . time()) . '.pdf');
+
+        // Ensure temp directory exists
+        $tmpDir = dirname($outputPath);
+        if (!is_dir($tmpDir)) {
+            mkdir($tmpDir, 0755, true);
+        }
+
+        $source = escapeshellarg($sourcePath);
+        $output = escapeshellarg($outputPath);
+
+        // ENHANCED Ghostscript command with FPDI-optimized parameters
+        // Key additions:
+        // - dPDFSETTINGS=/prepress: High quality, uncompressed
+        // - dCompressPages=false: Disable compression
+        // - dUseFlateCompression=false: Disable Flate compression
+        // - dAutoFilterColorImages=false: No automatic filtering
+        // - dAutoFilterGrayImages=false: No automatic filtering
+        // - dEmbedAllFonts=true: Ensure fonts are embedded
+        $command = "gs -sDEVICE=pdfwrite " .
+            "-dCompatibilityLevel=1.4 " .
+            "-dPDFSETTINGS=/prepress " .
+            "-dNOPAUSE -dQUIET -dBATCH " .
+            "-dCompressPages=false " .
+            "-dUseFlateCompression=false " .
+            "-dAutoFilterColorImages=false " .
+            "-dAutoFilterGrayImages=false " .
+            "-dColorImageFilter=/FlateEncode " .
+            "-dGrayImageFilter=/FlateEncode " .
+            "-dEmbedAllFonts=true " .
+            "-sOutputFile=$output $source 2>&1";
+
+        $result = shell_exec($command);
+
+        if (file_exists($outputPath) && filesize($outputPath) > 0) {
+            Log::info('Enhanced Ghostscript conversion successful', [
+                'output' => $outputPath,
+                'size' => filesize($outputPath)
+            ]);
+            return $outputPath;
+        }
+
+        Log::warning('Enhanced Ghostscript conversion failed', [
+            'command' => $command,
+            'result' => $result
+        ]);
+
+        return null;
+    }
+
+    /**
+     * Convert PDF using pdftocairo (Poppler - good quality)
      */
     private function convertPdfWithCairo(string $sourcePath): ?string
     {
@@ -760,7 +842,7 @@ class BundleExportService
     }
 
     /**
-     * Convert PDF using Ghostscript (fallback)
+     * Convert PDF using Ghostscript (basic fallback)
      */
     private function convertPdfWithGhostscript(string $sourcePath): ?string
     {
@@ -775,7 +857,7 @@ class BundleExportService
             return null;
         }
 
-        $outputPath = storage_path('app/tmp/gs_' . md5($sourcePath . time()) . '.pdf');
+        $outputPath = storage_path('app/tmp/gs_basic_' . md5($sourcePath . time()) . '.pdf');
 
         // Ensure temp directory exists
         $tmpDir = dirname($outputPath);
@@ -790,14 +872,14 @@ class BundleExportService
         $result = shell_exec($command);
 
         if (file_exists($outputPath) && filesize($outputPath) > 0) {
-            Log::info('Ghostscript conversion successful', [
+            Log::info('Basic Ghostscript conversion successful', [
                 'output' => $outputPath,
                 'size' => filesize($outputPath)
             ]);
             return $outputPath;
         }
 
-        Log::warning('Ghostscript conversion failed', [
+        Log::warning('Basic Ghostscript conversion failed', [
             'command' => $command,
             'result' => $result
         ]);
