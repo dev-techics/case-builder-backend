@@ -6,6 +6,7 @@ use App\Http\Controllers\BundleController;
 use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\HighlightController;
 use App\Http\Controllers\CommentController;
+use App\Http\Controllers\CoverPageController;
 
 // Public routes
 Route::post('/register', [AuthController::class, 'register']);
@@ -23,6 +24,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{bundle}', [BundleController::class, 'show']);
         Route::put('/{bundle}', [BundleController::class, 'update']);
         Route::delete('/{bundle}', [BundleController::class, 'destroy']);
+        
+        // Bundle Cover Pages - SIMPLIFIED!
+        Route::patch('bundles/{bundle}/front-cover', [BundleController::class, 'setFrontCover']);
+        Route::patch('bundles/{bundle}/back-cover', [BundleController::class, 'setBackCover']);
 
         // Stream index PDF
         Route::get('/{bundle}/index-stream', [BundleController::class, 'streamIndex'])

@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use App\Models\CoverPage;
 
 
 class BundleController extends Controller
@@ -23,6 +24,71 @@ class BundleController extends Controller
     ) {
         $this->indexGenerator = $indexGenerator;
     }
+
+       /**
+     * Set front cover for bundle
+     */
+    public function setFrontCover(Request $request, Bundle $bundle): JsonResponse
+    {
+        // Check authorization
+        if ($bundle->user_id !== $request->user()->id) {
+            abort(403, 'Unauthorized');
+        }
+
+        $validated = $request->validate([
+            'cover_page_id' => 'nullable|exists:cover_pages,id',
+        ]);
+
+        if ($validated['cover_page_id']) {
+            $coverPage = CoverPage::findOrFail($validated['cover_page_id']);
+
+            // Verify it's a front cover
+            if ($coverPage->type !== 'front') {
+                return response()->json([
+                    'message' => 'This is not a front cover page',
+                ], 422);
+            }
+        }
+
+        $bundle->setFrontCover($validated['cover_page_id']);
+
+        return response()->json([
+            'message' => 'Front cover updated successfully',
+            'bundle' => $bundle->fresh(['frontCoverPage']),
+        ]);
+    }
+
+    /**
+     * Set back cover for bundle
+     */
+    public function setBackCover(Request $request, Bundle $bundle): JsonResponse
+    {
+        $this->authorize('update', $bundle);
+
+        $validated = $request->validate([
+            'cover_page_id' => 'nullable|exists:cover_pages,id',
+        ]);
+
+        if ($validated['cover_page_id']) {
+            $coverPage = CoverPage::findOrFail($validated['cover_page_id']);
+            $this->authorize('view', $coverPage);
+
+            // Verify it's a back cover
+            if ($coverPage->type !== 'back') {
+                return response()->json([
+                    'message' => 'This is not a back cover page',
+                ], 422);
+            }
+        }
+
+        $bundle->setBackCover($validated['cover_page_id']);
+
+        return response()->json([
+            'message' => 'Back cover updated successfully',
+            'bundle' => $bundle->fresh(['backCoverPage']),
+        ]);
+    }
+
 
     public function streamIndex(Bundle $bundle, Request $request): StreamedResponse
     {
@@ -67,12 +133,16 @@ class BundleController extends Controller
 
         $validated = $request->validate([
             'include_index' => 'boolean',
+            'include_cover' => 'boolean',
         ]);
 
+        $includeIndex = $validated['include_index'] ?? true;
+        $includeCover = $validated['include_cover'] ?? true;
         try {
             $path = $this->exportService->exportBundle(
                 $bundle,
-                $validated['include_index'] ?? true
+                $includeIndex,
+                $includeCover
             );
 
             // Return download response

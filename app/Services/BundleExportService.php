@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Bundle;
 use App\Models\Document;
 use App\Models\Highlight;
+use App\Models\CoverPage;
 use setasign\Fpdi\Tcpdf\Fpdi;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
@@ -13,7 +14,8 @@ class BundleExportService
 {
     public function __construct(
         private PdfModifierService $pdfModifier,
-        private IndexGenerationService $indexService
+        private IndexGenerationService $indexService,
+        private CoverPageGeneratorService $coverPageGenerator
     ) {}
 
     /**
@@ -21,11 +23,13 @@ class BundleExportService
      */
     public function exportBundle(
         Bundle $bundle,
-        bool $includeIndex = true
+        bool $includeIndex = true,
+        bool $includeCoverPage = true
     ): string {
         Log::info('Starting bundle export', [
             'bundle_id' => $bundle->id,
             'include_index' => $includeIndex,
+            'include_cover' => $includeCoverPage,
         ]);
 
         try {
@@ -38,6 +42,26 @@ class BundleExportService
             $globalPageNumber = 1;
             $filePageMapping = [];
             $metadata = $bundle->metadata ?? [];
+
+
+            // STEP 1: Add front cover page if enabled
+            $coverPageCount = 0;
+            if ($includeCoverPage && isset($metadata['front_cover_page_id'])) {
+                $coverPageId = $metadata['front_cover_page_id'];
+                $coverPage = CoverPage::find($coverPageId);
+
+                if ($coverPage) {
+                    $coverPageCount = $this->addCoverPage($pdf, $coverPage);
+                    $globalPageNumber += $coverPageCount;
+
+                    Log::info('Front cover page added', [
+                        'cover_page_id' => $coverPageId,
+                        'pages' => $coverPageCount
+                    ]);
+                }
+            }
+
+            // STEP 2: Add index pages
             $index_path = $metadata['index_path'] ?? null;
 
             $indexPageCount = 0;
@@ -52,13 +76,14 @@ class BundleExportService
                 $linkPositions = $metadata['index_link_positions'] ?? [];
             }
 
-            // Calculate total pages for footer
+            // STEP 3: Calculate total pages
             $totalPages = $this->calculateTotalPages($bundle);
 
             if ($includeIndex && $index_path) {
                 $totalPages += $indexPageCount;
             }
 
+            // STEP 4: Add documents
             // Get root-level documents in order
             $documents = $bundle->documents()
                 ->whereNull('parent_id')
@@ -86,11 +111,13 @@ class BundleExportService
                 $globalPageNumber += $pageCount;
             }
 
+            // STEP 5: Add index links
             // Recreate clickable links using STORED POSITIONS
             if ($includeIndex && !empty($linkPositions)) {
                 $this->recreateIndexLinks($pdf, $linkPositions);
             }
 
+            // STEP 6: Add highlights
             // Get highlights from database
             $highlights = $this->getHighlightsGrouped($bundle);
 
@@ -99,6 +126,7 @@ class BundleExportService
                 $this->addHighlights($pdf, $highlights, $filePageMapping);
             }
 
+            // STEP 7: Save and return
             // Generate and save PDF
             $filename = $this->generateFilename($bundle);
             $path = "exports/{$filename}";
@@ -108,7 +136,9 @@ class BundleExportService
             Log::info('Bundle export completed', [
                 'bundle_id' => $bundle->id,
                 'path' => $path,
-                'pages' => $globalPageNumber - 1
+                'total_pages' => $globalPageNumber - 1,
+                'cover_pages' => $coverPageCount,
+                'index_pages' => $indexPageCount
             ]);
 
             return $path;
@@ -907,5 +937,50 @@ class BundleExportService
         }
 
         return 0;
+    }
+
+    /**
+     * Add cover page to PDF
+     */
+    private function addCoverPage(Fpdi $pdf, CoverPage $coverPage): int
+    {
+        try {
+            $coverData = [
+                'template_key' => $coverPage->template_key,
+                'values' => $coverPage->values,
+            ];
+
+            $coverPdfString = $this->coverPageGenerator->generateCoverPage($coverData);
+
+            // Save to temporary file
+            $tempPath = storage_path('app/tmp/cover_' . uniqid() . '.pdf');
+            file_put_contents($tempPath, $coverPdfString);
+
+            // Import cover page
+            $pageCount = $pdf->setSourceFile($tempPath);
+
+            for ($i = 1; $i <= $pageCount; $i++) {
+                $tpl = $pdf->importPage($i);
+                $size = $pdf->getTemplateSize($tpl);
+
+                $pdf->AddPage(
+                    $size['orientation'],
+                    [$size['width'], $size['height']]
+                );
+
+                $pdf->useTemplate($tpl, 0, 0, $size['width'], $size['height']);
+            }
+
+            // Clean up temp file
+            @unlink($tempPath);
+
+            return $pageCount;
+        } catch (\Exception $e) {
+            Log::error('Failed to add cover page', [
+                'cover_page_id' => $coverPage->id,
+                'error' => $e->getMessage()
+            ]);
+            return 0;
+        }
     }
 }
