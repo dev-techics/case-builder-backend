@@ -25,7 +25,7 @@ class BundleController extends Controller
         $this->indexGenerator = $indexGenerator;
     }
 
-       /**
+    /**
      * Set front cover for bundle
      */
     public function setFrontCover(Request $request, Bundle $bundle): JsonResponse
@@ -274,6 +274,8 @@ class BundleController extends Controller
             'header_left' => 'nullable|string|max:255',
             'header_right' => 'nullable|string|max:255',
             'footer' => 'nullable|string|max:255',
+            'front_cover_page_id' => 'nullable|string|exists:cover_pages,template_key', // Add validation
+            'back_cover_page_id' => 'nullable|string|exists:cover_pages,id',  // Optional: for back cover
         ]);
 
         // Merge with existing metadata
@@ -281,6 +283,15 @@ class BundleController extends Controller
         $metadata['header_left'] = $validated['header_left'] ?? '';
         $metadata['header_right'] = $validated['header_right'] ?? '';
         $metadata['footer'] = $validated['footer'] ?? '';
+
+        // Update cover page IDs
+        if (isset($validated['front_cover_page_id'])) {
+            $metadata['front_cover_page_id'] = $validated['front_cover_page_id'];
+        }
+
+        if (isset($validated['back_cover_page_id'])) {
+            $metadata['back_cover_page_id'] = $validated['back_cover_page_id'];
+        }
 
         $bundle->update(['metadata' => $metadata]);
 

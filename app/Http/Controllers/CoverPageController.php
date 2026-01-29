@@ -1,9 +1,10 @@
 <?php
+
 namespace App\Http\Controllers;
 
 use App\Models\CoverPage;
-use App\Http\Requests\StoreCoverPageRequest;
 use App\Http\Requests\UpdateCoverPageRequest;
+use App\Http\Requests\StoreCoverPageRequest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -33,6 +34,7 @@ class CoverPageController extends Controller
 
     /**
      * Get a specific cover page
+     * TODO: fix it
      */
     public function show(CoverPage $coverPage): JsonResponse
     {
@@ -46,13 +48,12 @@ class CoverPageController extends Controller
      */
     public function store(StoreCoverPageRequest $request): JsonResponse
     {
-        $coverPage = CoverPage::create([
-            'user_id' => Auth::id(),
-            ...$request->validated(),
-        ]);
+        $data = $request->validated();
+        $data['user_id'] = Auth::id();
 
-        // If marked as default, set it
-        if ($request->is_default) {
+        $coverPage = CoverPage::create($data);
+
+        if (!empty($data['is_default'])) {
             $coverPage->setAsDefault();
         }
 

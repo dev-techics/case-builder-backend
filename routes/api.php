@@ -116,4 +116,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/{comment}', [CommentController::class, 'destroy']);
         Route::post('/{comment}/toggle-resolved', [CommentController::class, 'toggleResolved']);
     });
+
+    // Cover pages routes
+    Route::prefix('/cover-pages')->group(function () {
+        Route::get('/', [CoverPageController::class, 'index']);
+        Route::post('/', [CoverPageController::class, 'store']);
+    });
 });

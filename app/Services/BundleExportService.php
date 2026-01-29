@@ -45,21 +45,28 @@ class BundleExportService
 
 
             // STEP 1: Add front cover page if enabled
+            /*
             $coverPageCount = 0;
             if ($includeCoverPage && isset($metadata['front_cover_page_id'])) {
-                $coverPageId = $metadata['front_cover_page_id'];
-                $coverPage = CoverPage::find($coverPageId);
+                $templateKey = $metadata['front_cover_page_id'];
+                $coverPage = CoverPage::where('template_key', $templateKey)->first();
 
                 if ($coverPage) {
                     $coverPageCount = $this->addCoverPage($pdf, $coverPage);
                     $globalPageNumber += $coverPageCount;
 
                     Log::info('Front cover page added', [
-                        'cover_page_id' => $coverPageId,
+                        'cover_page_id' => $templateKey,
+                        'pages' => $coverPageCount
+                    ]);
+                }else{
+                    Log::info('Front cover page not added', [
+                        'cover_page_id' => $templateKey,
                         'pages' => $coverPageCount
                     ]);
                 }
             }
+            */
 
             // STEP 2: Add index pages
             $index_path = $metadata['index_path'] ?? null;
@@ -137,7 +144,6 @@ class BundleExportService
                 'bundle_id' => $bundle->id,
                 'path' => $path,
                 'total_pages' => $globalPageNumber - 1,
-                'cover_pages' => $coverPageCount,
                 'index_pages' => $indexPageCount
             ]);
 
