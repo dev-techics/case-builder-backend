@@ -15,23 +15,25 @@ class CoverPageGeneratorService
         $templateKey = $coverPageData['template_key'] ?? 'legal_cover_v1';
         $values = $coverPageData['values'] ?? [];
 
-        $template = $this->getTemplate($templateKey);
-
-        if (!$template) {
-            throw new \Exception("Template not found: {$templateKey}");
-        }
-
         Log::info('Generating cover page', [
             'template' => $templateKey,
-            'fields' => count($values)
+            'values_structure' => $values
         ]);
+
+        // Extract fields from the values structure
+        // Values come as: { page: {...}, fields: [...] }
+        $fields = $values['fields'] ?? [];
+        $pageConfig = $values['page'] ?? [
+            'size' => 'A4',
+            'margin' => 20,
+            'orientation' => 'portrait'
+        ];
 
         $pdf = new Fpdi();
         $pdf->setPrintHeader(false);
         $pdf->setPrintFooter(false);
         
         // Set up page based on template config
-        $pageConfig = $template['page'];
         $orientation = $pageConfig['orientation'] === 'landscape' ? 'L' : 'P';
         $format = $pageConfig['size'] === 'Letter' ? 'LETTER' : 'A4';
         
@@ -42,14 +44,26 @@ class CoverPageGeneratorService
             $pageConfig['margin']
         );
 
+        Log::info('Cover page fields', [
+            'field_count' => count($fields),
+            'fields' => $fields
+        ]);
+
         // Render each field
-        foreach ($template['fields'] as $field) {
-            $fieldName = $field['name'];
-            $value = $values[$fieldName] ?? '';
+        foreach ($fields as $field) {
+            $value = $field['value'] ?? '';
 
             if (empty($value)) {
+                Log::debug('Skipping empty field', ['field' => $field['name']]);
                 continue; // Skip empty fields
             }
+
+            Log::debug('Rendering field', [
+                'name' => $field['name'],
+                'value' => $value,
+                'x' => $field['x'],
+                'y' => $field['y']
+            ]);
 
             $this->renderField($pdf, $field, $value);
         }
@@ -58,7 +72,7 @@ class CoverPageGeneratorService
         return $pdf->Output('', 'S');
     }
 
-    /**
+  /**
      * Render a single field on the PDF
      */
     private function renderField(Fpdi $pdf, array $field, string $value): void
@@ -67,6 +81,11 @@ class CoverPageGeneratorService
         $fontParts = explode('-', $field['font']);
         $fontFamily = strtolower($fontParts[0]);
         $fontStyle = isset($fontParts[1]) && strtolower($fontParts[1]) === 'bold' ? 'B' : '';
+
+        // Handle bold flag if present
+        if (isset($field['bold']) && $field['bold'] === true) {
+            $fontStyle = 'B';
+        }
 
         // Set font
         $pdf->SetFont($fontFamily, $fontStyle, $field['size']);
@@ -83,6 +102,10 @@ class CoverPageGeneratorService
         // Alignment
         $align = strtoupper(substr($field['align'], 0, 1)); // L, C, R
 
+        // Get page width for center/right alignment
+        $pageWidth = $pdf->getPageWidth();
+        $margins = $pdf->getMargins();
+
         // Handle multi-line text
         $maxWidth = $field['maxWidth'] ?? 0;
         
@@ -91,12 +114,27 @@ class CoverPageGeneratorService
             $pdf->SetXY($x, $y);
             $pdf->MultiCell($maxWidth, 0, $value, 0, $align, false, 1);
         } else {
-            // Single line
-            $pdf->SetXY($x, $y);
-            $pdf->Cell(0, 0, $value, 0, 0, $align);
+            // Single line - handle alignment properly
+            if ($align === 'C') {
+                // For center alignment, position is the center point
+                // Calculate the text width and adjust x position
+                $textWidth = $pdf->GetStringWidth($value);
+                $actualX = $x - ($textWidth / 2);
+                $pdf->SetXY($actualX, $y);
+                $pdf->Cell($textWidth, 0, $value, 0, 0, 'L');
+            } elseif ($align === 'R') {
+                // For right alignment, position is the right edge
+                $textWidth = $pdf->GetStringWidth($value);
+                $actualX = $x - $textWidth;
+                $pdf->SetXY($actualX, $y);
+                $pdf->Cell($textWidth, 0, $value, 0, 0, 'L');
+            } else {
+                // Left alignment - use position as-is
+                $pdf->SetXY($x, $y);
+                $pdf->Cell(0, 0, $value, 0, 0, 'L');
+            }
         }
     }
-
     /**
      * Convert hex color to RGB
      */
@@ -113,201 +151,5 @@ class CoverPageGeneratorService
             hexdec(substr($hex, 2, 2)),
             hexdec(substr($hex, 4, 2))
         ];
-    }
-
-    /**
-     * Get template definition
-     */
-    private function getTemplate(string $key): ?array
-    {
-        $templates = [
-            'legal_cover_v1' => [
-                'key' => 'legal_cover_v1',
-                'name' => 'Legal Cover – Default',
-                'page' => [
-                    'size' => 'A4',
-                    'margin' => 20,
-                    'orientation' => 'portrait',
-                ],
-                'fields' => [
-                    [
-                        'name' => 'title',
-                        'x' => 105,
-                        'y' => 60,
-                        'font' => 'times-bold',
-                        'size' => 24,
-                        'align' => 'center',
-                    ],
-                    [
-                        'name' => 'case_number',
-                        'x' => 105,
-                        'y' => 85,
-                        'font' => 'times',
-                        'size' => 14,
-                        'align' => 'center',
-                    ],
-                    [
-                        'name' => 'court_name',
-                        'x' => 105,
-                        'y' => 105,
-                        'font' => 'times',
-                        'size' => 12,
-                        'align' => 'center',
-                    ],
-                    [
-                        'name' => 'prepared_for',
-                        'x' => 30,
-                        'y' => 140,
-                        'font' => 'times-bold',
-                        'size' => 11,
-                        'align' => 'left',
-                    ],
-                    [
-                        'name' => 'prepared_for_value',
-                        'x' => 30,
-                        'y' => 150,
-                        'font' => 'times',
-                        'size' => 11,
-                        'align' => 'left',
-                    ],
-                    [
-                        'name' => 'prepared_by',
-                        'x' => 30,
-                        'y' => 170,
-                        'font' => 'times-bold',
-                        'size' => 11,
-                        'align' => 'left',
-                    ],
-                    [
-                        'name' => 'prepared_by_value',
-                        'x' => 30,
-                        'y' => 180,
-                        'font' => 'times',
-                        'size' => 11,
-                        'align' => 'left',
-                    ],
-                    [
-                        'name' => 'date',
-                        'x' => 30,
-                        'y' => 200,
-                        'font' => 'times-bold',
-                        'size' => 11,
-                        'align' => 'left',
-                    ],
-                    [
-                        'name' => 'date_value',
-                        'x' => 30,
-                        'y' => 210,
-                        'font' => 'times',
-                        'size' => 11,
-                        'align' => 'left',
-                    ],
-                ],
-            ],
-            'simple_cover_v1' => [
-                'key' => 'simple_cover_v1',
-                'name' => 'Simple Cover',
-                'page' => [
-                    'size' => 'A4',
-                    'margin' => 20,
-                    'orientation' => 'portrait',
-                ],
-                'fields' => [
-                    [
-                        'name' => 'title',
-                        'x' => 105,
-                        'y' => 100,
-                        'font' => 'helvetica-bold',
-                        'size' => 28,
-                        'align' => 'center',
-                    ],
-                    [
-                        'name' => 'subtitle',
-                        'x' => 105,
-                        'y' => 130,
-                        'font' => 'helvetica',
-                        'size' => 14,
-                        'align' => 'center',
-                    ],
-                    [
-                        'name' => 'date_value',
-                        'x' => 105,
-                        'y' => 260,
-                        'font' => 'helvetica',
-                        'size' => 12,
-                        'align' => 'center',
-                    ],
-                ],
-            ],
-            'court_submission_v1' => [
-                'key' => 'court_submission_v1',
-                'name' => 'Court Submission',
-                'page' => [
-                    'size' => 'A4',
-                    'margin' => 20,
-                    'orientation' => 'portrait',
-                ],
-                'fields' => [
-                    [
-                        'name' => 'court_header',
-                        'x' => 105,
-                        'y' => 40,
-                        'font' => 'times-bold',
-                        'size' => 16,
-                        'align' => 'center',
-                    ],
-                    [
-                        'name' => 'case_number',
-                        'x' => 105,
-                        'y' => 60,
-                        'font' => 'times',
-                        'size' => 14,
-                        'align' => 'center',
-                    ],
-                    [
-                        'name' => 'case_title',
-                        'x' => 105,
-                        'y' => 90,
-                        'font' => 'times-bold',
-                        'size' => 18,
-                        'align' => 'center',
-                    ],
-                    [
-                        'name' => 'document_type',
-                        'x' => 105,
-                        'y' => 130,
-                        'font' => 'times',
-                        'size' => 14,
-                        'align' => 'center',
-                    ],
-                    [
-                        'name' => 'filed_by',
-                        'x' => 30,
-                        'y' => 170,
-                        'font' => 'times',
-                        'size' => 11,
-                        'align' => 'left',
-                    ],
-                    [
-                        'name' => 'counsel',
-                        'x' => 30,
-                        'y' => 190,
-                        'font' => 'times',
-                        'size' => 11,
-                        'align' => 'left',
-                    ],
-                    [
-                        'name' => 'date_value',
-                        'x' => 105,
-                        'y' => 260,
-                        'font' => 'times',
-                        'size' => 11,
-                        'align' => 'center',
-                    ],
-                ],
-            ],
-        ];
-
-        return $templates[$key] ?? null;
     }
 }

@@ -45,7 +45,7 @@ class BundleExportService
 
 
             // STEP 1: Add front cover page if enabled
-            /*
+            
             $coverPageCount = 0;
             if ($includeCoverPage && isset($metadata['front_cover_page_id'])) {
                 $templateKey = $metadata['front_cover_page_id'];
@@ -59,14 +59,13 @@ class BundleExportService
                         'cover_page_id' => $templateKey,
                         'pages' => $coverPageCount
                     ]);
-                }else{
-                    Log::info('Front cover page not added', [
+                } else {
+                    Log::warning('Front cover page not found', [
                         'cover_page_id' => $templateKey,
-                        'pages' => $coverPageCount
                     ]);
                 }
             }
-            */
+            
 
             // STEP 2: Add index pages
             $index_path = $metadata['index_path'] ?? null;
@@ -88,6 +87,10 @@ class BundleExportService
 
             if ($includeIndex && $index_path) {
                 $totalPages += $indexPageCount;
+            }
+
+            if ($includeCoverPage && $coverPageCount > 0) {
+                $totalPages += $coverPageCount;
             }
 
             // STEP 4: Add documents
@@ -118,19 +121,19 @@ class BundleExportService
                 $globalPageNumber += $pageCount;
             }
 
-            // STEP 5: Add index links
-            // Recreate clickable links using STORED POSITIONS
+            // STEP 5: Add index links with correct page offset
+            // Recreate clickable links using STORED POSITIONS, offset by cover page count
             if ($includeIndex && !empty($linkPositions)) {
-                $this->recreateIndexLinks($pdf, $linkPositions);
+                $this->recreateIndexLinks($pdf, $linkPositions, $coverPageCount);
             }
 
             // STEP 6: Add highlights
             // Get highlights from database
             $highlights = $this->getHighlightsGrouped($bundle);
 
-            // Add highlights if available
+            // Add highlights if available, offset by cover page count
             if (!empty($highlights)) {
-                $this->addHighlights($pdf, $highlights, $filePageMapping);
+                $this->addHighlights($pdf, $highlights, $filePageMapping, $coverPageCount);
             }
 
             // STEP 7: Save and return
@@ -144,6 +147,7 @@ class BundleExportService
                 'bundle_id' => $bundle->id,
                 'path' => $path,
                 'total_pages' => $globalPageNumber - 1,
+                'cover_pages' => $coverPageCount,
                 'index_pages' => $indexPageCount
             ]);
 
@@ -160,11 +164,13 @@ class BundleExportService
 
     /**
      * Recreate clickable links using EXACT stored positions
+     * FIXED: Offset both index page and target page by cover page count
      */
-    private function recreateIndexLinks(Fpdi $pdf, array $linkPositions): void
+    private function recreateIndexLinks(Fpdi $pdf, array $linkPositions, int $coverPageOffset = 0): void
     {
         Log::info('Recreating index links', [
-            'positions' => count($linkPositions)
+            'positions' => count($linkPositions),
+            'cover_page_offset' => $coverPageOffset
         ]);
 
         foreach ($linkPositions as $position) {
@@ -172,8 +178,9 @@ class BundleExportService
                 continue;
             }
 
-            $indexPage  = (int) $position['page'];
-            $targetPage = (int) $position['target_page'];
+            // Offset both the index page and target page by cover page count
+            $indexPage  = (int) $position['page'] + $coverPageOffset;
+            $targetPage = (int) $position['target_page'] + $coverPageOffset;
 
             if ($targetPage <= 0) {
                 continue;
@@ -193,12 +200,6 @@ class BundleExportService
             $height = (float) $position['height'];
             $width  = $pdf->getPageWidth() - $x - 50;
 
-            // Optional debug rectangle
-            // $pdf->SetAlpha(0.15);
-            // $pdf->SetFillColor(0, 120, 255);
-            // $pdf->Rect($x, $y, $width, $height, 'F');
-            // $pdf->SetAlpha(1);
-
             // Correct internal link
             $pdf->Link($x, $y, $width, $height, $linkId);
 
@@ -206,6 +207,7 @@ class BundleExportService
                 'index_page'  => $indexPage,
                 'target_page' => $targetPage,
                 'link_id'     => $linkId,
+                'cover_offset' => $coverPageOffset
             ]);
         }
 
@@ -578,14 +580,18 @@ class BundleExportService
 
     /**
      * Add highlights to PDF
+     * FIXED: Offset page numbers by cover page count
      */
     private function addHighlights(
         Fpdi $pdf,
         array $highlights,
-        array $filePageMapping
+        array $filePageMapping,
+        int $coverPageOffset = 0
     ): void {
         try {
-            Log::info('Adding highlights to PDF');
+            Log::info('Adding highlights to PDF', [
+                'cover_offset' => $coverPageOffset
+            ]);
 
             foreach ($highlights as $documentId => $documentHighlights) {
 
@@ -598,6 +604,7 @@ class BundleExportService
                 foreach ($documentHighlights as $pageNum => $pageHighlights) {
 
                     // Calculate global page number (merged PDF page index)
+                    // This already includes cover page offset from addDocumentPages
                     $globalPage = $mapping['start'] + ($pageNum - 1);
 
                     if ($globalPage < 1 || $globalPage > $pdf->getNumPages()) {
@@ -793,13 +800,6 @@ class BundleExportService
         $output = escapeshellarg($outputPath);
 
         // ENHANCED Ghostscript command with FPDI-optimized parameters
-        // Key additions:
-        // - dPDFSETTINGS=/prepress: High quality, uncompressed
-        // - dCompressPages=false: Disable compression
-        // - dUseFlateCompression=false: Disable Flate compression
-        // - dAutoFilterColorImages=false: No automatic filtering
-        // - dAutoFilterGrayImages=false: No automatic filtering
-        // - dEmbedAllFonts=true: Ensure fonts are embedded
         $command = "gs -sDEVICE=pdfwrite " .
             "-dCompatibilityLevel=1.4 " .
             "-dPDFSETTINGS=/prepress " .
@@ -956,11 +956,28 @@ class BundleExportService
                 'values' => $coverPage->values,
             ];
 
+            Log::info('Generating cover page PDF', [
+                'cover_page_id' => $coverPage->id,
+                'template_key' => $coverPage->template_key
+            ]);
+
             $coverPdfString = $this->coverPageGenerator->generateCoverPage($coverData);
 
             // Save to temporary file
             $tempPath = storage_path('app/tmp/cover_' . uniqid() . '.pdf');
+            
+            // Ensure temp directory exists
+            $tmpDir = dirname($tempPath);
+            if (!is_dir($tmpDir)) {
+                mkdir($tmpDir, 0755, true);
+            }
+            
             file_put_contents($tempPath, $coverPdfString);
+
+            Log::info('Cover page PDF saved to temp file', [
+                'path' => $tempPath,
+                'size' => filesize($tempPath)
+            ]);
 
             // Import cover page
             $pageCount = $pdf->setSourceFile($tempPath);
@@ -980,11 +997,16 @@ class BundleExportService
             // Clean up temp file
             @unlink($tempPath);
 
+            Log::info('Cover page added successfully', [
+                'pages' => $pageCount
+            ]);
+
             return $pageCount;
         } catch (\Exception $e) {
             Log::error('Failed to add cover page', [
                 'cover_page_id' => $coverPage->id,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ]);
             return 0;
         }

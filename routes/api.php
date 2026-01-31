@@ -24,7 +24,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{bundle}', [BundleController::class, 'show']);
         Route::put('/{bundle}', [BundleController::class, 'update']);
         Route::delete('/{bundle}', [BundleController::class, 'destroy']);
-        
+
         // Bundle Cover Pages - SIMPLIFIED!
         Route::patch('bundles/{bundle}/front-cover', [BundleController::class, 'setFrontCover']);
         Route::patch('bundles/{bundle}/back-cover', [BundleController::class, 'setBackCover']);
@@ -35,7 +35,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Export bundle
         Route::post('/{bundle}/export', [BundleController::class, 'export']);
-        
+
         // Update metadata (headers/footers)
         Route::patch('/{bundle}/metadata', [BundleController::class, 'updateMetadata']);
 
@@ -48,7 +48,7 @@ Route::middleware('auth:sanctum')->group(function () {
             *This route is for creating new folder 
             ? Do I need a separate controller method for creating folder?
             */
-            Route::post('/', [DocumentController::class, 'store']); 
+            Route::post('/', [DocumentController::class, 'store']);
             Route::post('/reorder', [DocumentController::class, 'reorder']);
         });
 
@@ -64,13 +64,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::prefix('/{bundle}/comments')->group(function () {
             // Get all comments for a bundle
             Route::get('/', [CommentController::class, 'index']);
-            
+
             // Create a comment
             Route::post('/', [CommentController::class, 'store']);
-            
+
             // Bulk delete comments
             Route::post('/bulk-delete', [CommentController::class, 'bulkDestroy']);
-            
+
             // Get unresolved count
             Route::get('/unresolved-count', [CommentController::class, 'unresolvedCount']);
         });
@@ -81,10 +81,10 @@ Route::middleware('auth:sanctum')->group(function () {
         // Stream/download file
         Route::get('/{document}/stream', [DocumentController::class, 'stream'])
             ->name('documents.stream');
-        
+
         // Rename file/folder
         Route::patch('/{document}/rename', [DocumentController::class, 'rename']);
-        
+
         // Delete file/folder
         Route::delete('/{document}', [DocumentController::class, 'destroy']);
 
@@ -98,7 +98,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/{document}/comments', [CommentController::class, 'clearDocument']);
         Route::delete('/{document}/pages/{page}/comments', [CommentController::class, 'clearPage']);
 
-         // NEW: Move document to different parent
+        // NEW: Move document to different parent
         Route::patch('/{document}/move', [DocumentController::class, 'move']);
     });
 
@@ -121,5 +121,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('/cover-pages')->group(function () {
         Route::get('/', [CoverPageController::class, 'index']);
         Route::post('/', [CoverPageController::class, 'store']);
+        Route::patch('/{coverPage}', [CoverPageController::class, 'update']);
     });
 });

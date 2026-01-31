@@ -8,6 +8,8 @@ use App\Http\Requests\StoreCoverPageRequest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+
 
 class CoverPageController extends Controller
 {
@@ -64,15 +66,31 @@ class CoverPageController extends Controller
     }
 
     /**
-     * Update a cover page
+     * Update an existing cover page
      */
-    public function update(
-        UpdateCoverPageRequest $request,
-        CoverPage $coverPage
-    ): JsonResponse {
-        $this->authorize('update', $coverPage);
+    
+    public function update(Request $request, CoverPage $coverPage): JsonResponse
+    {
+        // Ensure the user owns this cover page
+        if ($coverPage->user_id !== $request->user()->id) {
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
 
-        $coverPage->update($request->validated());
+        $validated = $request->validate([
+            'name' => 'sometimes|string|max:255',
+            'description' => 'sometimes|string|max:500',
+            'type' => 'sometimes|in:front,back',
+            'template_key' => 'sometimes|string|max:100',
+            'values' => 'sometimes|array',
+            'is_default' => 'sometimes|boolean',
+        ]);
+
+        Log::info("cover page info:",$validated);
+
+        // Update the cover page
+        $coverPage->update($validated);
 
         // If marked as default, set it
         if ($request->is_default) {
@@ -84,6 +102,7 @@ class CoverPageController extends Controller
             'cover_page' => $coverPage->fresh(),
         ]);
     }
+
 
     /**
      * Delete a cover page
