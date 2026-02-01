@@ -24,12 +24,14 @@ class BundleExportService
     public function exportBundle(
         Bundle $bundle,
         bool $includeIndex = true,
-        bool $includeCoverPage = true
+        bool $includeFrontCover = true,
+        bool $includeBackCover = true
     ): string {
         Log::info('Starting bundle export', [
             'bundle_id' => $bundle->id,
             'include_index' => $includeIndex,
-            'include_cover' => $includeCoverPage,
+            'include_front_cover' => $includeFrontCover,
+            'include_back_cover' => $includeBackCover,
         ]);
 
         try {
@@ -45,23 +47,22 @@ class BundleExportService
 
 
             // STEP 1: Add front cover page if enabled
-            
-            $coverPageCount = 0;
-            if ($includeCoverPage && isset($metadata['front_cover_page_id'])) {
-                $templateKey = $metadata['front_cover_page_id'];
-                $coverPage = CoverPage::where('template_key', $templateKey)->first();
+            $frontCoverPageCount = 0;
+            if ($includeFrontCover && isset($metadata['front_cover_page_id'])) {
+                $coverPageId = $metadata['front_cover_page_id'];
+                $coverPage = CoverPage::find($coverPageId);
 
                 if ($coverPage) {
-                    $coverPageCount = $this->addCoverPage($pdf, $coverPage);
-                    $globalPageNumber += $coverPageCount;
+                    $frontCoverPageCount = $this->addCoverPage($pdf, $coverPage, 'front');
+                    $globalPageNumber += $frontCoverPageCount;
 
                     Log::info('Front cover page added', [
-                        'cover_page_id' => $templateKey,
-                        'pages' => $coverPageCount
+                        'cover_page_id' => $coverPageId,
+                        'pages' => $frontCoverPageCount
                     ]);
                 } else {
                     Log::warning('Front cover page not found', [
-                        'cover_page_id' => $templateKey,
+                        'cover_page_id' => $coverPageId,
                     ]);
                 }
             }
@@ -89,9 +90,12 @@ class BundleExportService
                 $totalPages += $indexPageCount;
             }
 
-            if ($includeCoverPage && $coverPageCount > 0) {
-                $totalPages += $coverPageCount;
+            if ($includeFrontCover && $frontCoverPageCount > 0) {
+                $totalPages += $frontCoverPageCount;
             }
+
+            // Note: Back cover pages will be added to total at the end
+            // since we need to know the count first
 
             // STEP 4: Add documents
             // Get root-level documents in order
@@ -122,21 +126,58 @@ class BundleExportService
             }
 
             // STEP 5: Add index links with correct page offset
-            // Recreate clickable links using STORED POSITIONS, offset by cover page count
+            // Recreate clickable links using STORED POSITIONS, offset by front cover page count
             if ($includeIndex && !empty($linkPositions)) {
-                $this->recreateIndexLinks($pdf, $linkPositions, $coverPageCount);
+                $this->recreateIndexLinks($pdf, $linkPositions, $frontCoverPageCount);
             }
 
             // STEP 6: Add highlights
             // Get highlights from database
             $highlights = $this->getHighlightsGrouped($bundle);
 
-            // Add highlights if available, offset by cover page count
+            // Add highlights if available, offset by front cover page count
             if (!empty($highlights)) {
-                $this->addHighlights($pdf, $highlights, $filePageMapping, $coverPageCount);
+                $this->addHighlights($pdf, $highlights, $filePageMapping, $frontCoverPageCount);
+                
+                // CRITICAL FIX: After using setPage() in highlights, TCPDF's internal state
+                // needs to be reset so that AddPage() will add at the END, not at current position
+                // This ensures the back cover is added as the last page
+                $pdf->lastPage();
             }
 
-            // STEP 7: Save and return
+            // STEP 7: Add back cover page if enabled
+            $backCoverPageCount = 0;
+            if ($includeBackCover && isset($metadata['back_cover_page_id'])) {
+                $coverPageId = $metadata['back_cover_page_id'];
+                $coverPage = CoverPage::find($coverPageId);
+
+                if ($coverPage) {
+                    Log::info('About to add back cover page', [
+                        'cover_page_id' => $coverPageId
+                    ]);
+
+                    $backCoverPageCount = $this->addCoverPage($pdf, $coverPage, 'back');
+
+                    Log::info('Back cover page added', [
+                        'cover_page_id' => $coverPageId,
+                        'pages' => $backCoverPageCount
+                    ]);
+                } else {
+                    Log::warning('Back cover page not found', [
+                        'cover_page_id' => $coverPageId,
+                    ]);
+                }
+            }
+
+            // STEP 8: Save and return
+            // Calculate total pages (front cover + index + documents + back cover)
+            $finalTotalPages = $frontCoverPageCount + $indexPageCount + ($globalPageNumber - 1 - $frontCoverPageCount - $indexPageCount) + $backCoverPageCount;
+
+            Log::info('About to output PDF', [
+                'final_total_pages' => $finalTotalPages,
+                'current_page' => $pdf->getPage()
+            ]);
+
             // Generate and save PDF
             $filename = $this->generateFilename($bundle);
             $path = "exports/{$filename}";
@@ -146,9 +187,11 @@ class BundleExportService
             Log::info('Bundle export completed', [
                 'bundle_id' => $bundle->id,
                 'path' => $path,
-                'total_pages' => $globalPageNumber - 1,
-                'cover_pages' => $coverPageCount,
-                'index_pages' => $indexPageCount
+                'total_pages' => $finalTotalPages,
+                'front_cover_pages' => $frontCoverPageCount,
+                'index_pages' => $indexPageCount,
+                'document_pages' => $globalPageNumber - 1 - $frontCoverPageCount - $indexPageCount,
+                'back_cover_pages' => $backCoverPageCount
             ]);
 
             return $path;
@@ -947,8 +990,13 @@ class BundleExportService
 
     /**
      * Add cover page to PDF
+     * 
+     * @param Fpdi $pdf The PDF instance
+     * @param CoverPage $coverPage The cover page model
+     * @param string $type 'front' or 'back'
+     * @return int Number of pages added
      */
-    private function addCoverPage(Fpdi $pdf, CoverPage $coverPage): int
+    private function addCoverPage(Fpdi $pdf, CoverPage $coverPage, string $type = 'front'): int
     {
         try {
             $coverData = [
@@ -958,13 +1006,14 @@ class BundleExportService
 
             Log::info('Generating cover page PDF', [
                 'cover_page_id' => $coverPage->id,
-                'template_key' => $coverPage->template_key
+                'template_key' => $coverPage->template_key,
+                'type' => $type
             ]);
 
             $coverPdfString = $this->coverPageGenerator->generateCoverPage($coverData);
 
             // Save to temporary file
-            $tempPath = storage_path('app/tmp/cover_' . uniqid() . '.pdf');
+            $tempPath = storage_path('app/tmp/cover_' . $type . '_' . uniqid() . '.pdf');
             
             // Ensure temp directory exists
             $tmpDir = dirname($tempPath);
@@ -976,7 +1025,8 @@ class BundleExportService
 
             Log::info('Cover page PDF saved to temp file', [
                 'path' => $tempPath,
-                'size' => filesize($tempPath)
+                'size' => filesize($tempPath),
+                'type' => $type
             ]);
 
             // Import cover page
@@ -986,18 +1036,29 @@ class BundleExportService
                 $tpl = $pdf->importPage($i);
                 $size = $pdf->getTemplateSize($tpl);
 
+                // For back cover, ensure we're adding at the end by calling AddPage with explicit parameters
+                // This is important because highlights might have moved the page pointer
                 $pdf->AddPage(
                     $size['orientation'],
-                    [$size['width'], $size['height']]
+                    [$size['width'], $size['height']],
+                    false, // keepmargins
+                    false  // tocpage
                 );
 
                 $pdf->useTemplate($tpl, 0, 0, $size['width'], $size['height']);
+                
+                Log::debug('Cover page template applied', [
+                    'type' => $type,
+                    'page_num' => $i,
+                    'orientation' => $size['orientation']
+                ]);
             }
 
             // Clean up temp file
             @unlink($tempPath);
 
             Log::info('Cover page added successfully', [
+                'type' => $type,
                 'pages' => $pageCount
             ]);
 
@@ -1005,6 +1066,7 @@ class BundleExportService
         } catch (\Exception $e) {
             Log::error('Failed to add cover page', [
                 'cover_page_id' => $coverPage->id,
+                'type' => $type,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);

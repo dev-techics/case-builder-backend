@@ -9,7 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use App\Models\CoverPage;
 
@@ -133,16 +133,20 @@ class BundleController extends Controller
 
         $validated = $request->validate([
             'include_index' => 'boolean',
-            'include_cover' => 'boolean',
+            'include_front_cover' => 'boolean',
+            'include_back_cover' => 'boolean',
         ]);
 
         $includeIndex = $validated['include_index'] ?? true;
-        $includeCover = $validated['include_cover'] ?? true;
+        $includeFrontCover = $validated['include_front_cover'] ?? true;
+        $includeBackCover = $validated['include_back_cover'] ?? true;
+
         try {
             $path = $this->exportService->exportBundle(
                 $bundle,
                 $includeIndex,
-                $includeCover
+                $includeFrontCover,
+                $includeBackCover
             );
 
             // Return download response
@@ -274,7 +278,7 @@ class BundleController extends Controller
             'header_left' => 'nullable|string|max:255',
             'header_right' => 'nullable|string|max:255',
             'footer' => 'nullable|string|max:255',
-            'front_cover_page_id' => 'nullable|string|exists:cover_pages,template_key', // Add validation
+            'front_cover_page_id' => 'nullable|string|exists:cover_pages,id', // Add validation
             'back_cover_page_id' => 'nullable|string|exists:cover_pages,id',  // Optional: for back cover
         ]);
 
