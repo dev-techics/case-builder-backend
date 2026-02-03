@@ -17,12 +17,12 @@ class CoverPage extends Model
         'description',
         'type',
         'template_key',
-        'values',
+        'html',
+        'lexical_json',
         'is_default',
     ];
 
     protected $casts = [
-        'values' => 'array',
         'is_default' => 'boolean',
     ];
 

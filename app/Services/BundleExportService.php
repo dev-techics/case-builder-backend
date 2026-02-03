@@ -999,18 +999,24 @@ class BundleExportService
     private function addCoverPage(Fpdi $pdf, CoverPage $coverPage, string $type = 'front'): int
     {
         try {
-            $coverData = [
-                'template_key' => $coverPage->template_key,
-                'values' => $coverPage->values,
-            ];
+            $html = $coverPage->html ?? '';
 
             Log::info('Generating cover page PDF', [
                 'cover_page_id' => $coverPage->id,
                 'template_key' => $coverPage->template_key,
-                'type' => $type
+                'type' => $type,
+                'html_length' => is_string($html) ? strlen($html) : 0
             ]);
 
-            $coverPdfString = $this->coverPageGenerator->generateCoverPage($coverData);
+            $coverPdfString = $this->coverPageGenerator->generateCoverPage($html);
+
+            if ($coverPdfString === '') {
+                Log::warning('Cover page PDF generation returned empty output', [
+                    'cover_page_id' => $coverPage->id,
+                    'type' => $type
+                ]);
+                return 0;
+            }
 
             // Save to temporary file
             $tempPath = storage_path('app/tmp/cover_' . $type . '_' . uniqid() . '.pdf');
@@ -1031,7 +1037,7 @@ class BundleExportService
 
             // Import cover page
             $pageCount = $pdf->setSourceFile($tempPath);
-
+            
             for ($i = 1; $i <= $pageCount; $i++) {
                 $tpl = $pdf->importPage($i);
                 $size = $pdf->getTemplateSize($tpl);

@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Models\CoverPage;
-use App\Http\Requests\UpdateCoverPageRequest;
 use App\Http\Requests\StoreCoverPageRequest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -52,6 +51,10 @@ class CoverPageController extends Controller
     {
         $data = $request->validated();
         $data['user_id'] = Auth::id();
+        if (array_key_exists('html_content', $data)) {
+            $data['html'] = $data['html_content'];
+            unset($data['html_content']);
+        }
 
         $coverPage = CoverPage::create($data);
 
@@ -83,9 +86,15 @@ class CoverPageController extends Controller
             'description' => 'sometimes|string|max:500',
             'type' => 'sometimes|in:front,back',
             'template_key' => 'sometimes|string|max:100',
-            'values' => 'sometimes|array',
+            'html_content' => 'sometimes|string',
+            'lexical_json' => 'sometimes|json',
             'is_default' => 'sometimes|boolean',
         ]);
+
+        if (array_key_exists('html_content', $validated)) {
+            $validated['html'] = $validated['html_content'];
+            unset($validated['html_content']);
+        }
 
         Log::info("cover page info:",$validated);
 

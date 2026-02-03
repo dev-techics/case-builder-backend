@@ -26,7 +26,8 @@ class StoreCoverPageRequest extends FormRequest
             'description' => 'nullable|string',
             'type' => 'required|in:front,back',
             'template_key' => 'required|string|max:255',
-            'values' => 'required|array',
+            'html_content' => 'required|string',
+            'lexical_json' => 'required|json',
             'is_default' => 'sometimes|boolean',
         ];
     }
