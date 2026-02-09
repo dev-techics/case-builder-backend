@@ -116,7 +116,6 @@ class BundleController extends Controller
             'Content-Type' => 'application/pdf',
             'Content-Length' => Storage::size($indexPath),
             'Content-Disposition' => 'inline; filename="index.pdf"',
-            'Cache-Control' => 'public, max-age=3600',
         ]);
     }
 

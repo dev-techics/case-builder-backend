@@ -544,7 +544,6 @@ class DocumentController extends Controller
         }
 
         $document->delete();
-
         // Regenerate index after deletion
         $this->indexGenerator->generateIndex($document->bundle);
 

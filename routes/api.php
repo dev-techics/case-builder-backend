@@ -11,6 +11,8 @@ use App\Http\Controllers\CoverPageController;
 // Public routes
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
+Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+Route::post('/forgot-password', [AuthController::class, 'sendResetLink']);
 
 // Protected routes
 Route::middleware('auth:sanctum')->group(function () {
