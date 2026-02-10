@@ -107,7 +107,7 @@ class AuthController extends Controller
 
         return $status === Password::RESET_LINK_SENT
             ? response()->json(['message' => 'Reset link sent'])
-            : response()->json(['message' => 'Unable to send reset link', 'status' => $status], 400);
+            : response()->json(['message' => 'Unable to send email', 'status' => $status], 400);
     }
     
     /**
@@ -133,7 +133,7 @@ class AuthController extends Controller
         );
 
         return $status === Password::PASSWORD_RESET
-            ? response()->json(['message' => 'Password reset successful'])
+            ? response()->json(['message' => 'Password reset successful'], 200)
             : response()->json(['message' => 'Invalid or expired token'], 400);
     }
 }

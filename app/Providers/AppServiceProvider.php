@@ -33,6 +33,7 @@ class AppServiceProvider extends ServiceProvider
         });
         Document::observe(DocumentObserver::class);
         ResetPassword::createUrlUsing(function ($user, string $token) {
+            
         return config('app.frontend_url')
             . '/reset-password'
             . '?token=' . $token
