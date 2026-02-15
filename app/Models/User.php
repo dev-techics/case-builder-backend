@@ -72,4 +72,12 @@ class User extends Authenticatable
     {
         return $this->hasMany(Comment::class);
     }
+
+    /**
+     * Get all redactions created by the user
+     */
+    public function redactions()
+    {
+        return $this->hasMany(Redaction::class);
+    }
 }

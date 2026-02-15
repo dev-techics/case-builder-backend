@@ -6,6 +6,7 @@ use App\Http\Controllers\BundleController;
 use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\HighlightController;
 use App\Http\Controllers\CommentController;
+use App\Http\Controllers\RedactionController;
 use App\Http\Controllers\CoverPageController;
 
 // Public routes
@@ -62,6 +63,14 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/bulk-delete', [HighlightController::class, 'bulkDestroy']);
         });
 
+        // Redaction routes nested under bundles
+        Route::prefix('/{bundle}/redactions')->group(function () {
+            Route::get('/', [RedactionController::class, 'index']);
+            Route::post('/', [RedactionController::class, 'store']);
+            Route::post('/bulk', [RedactionController::class, 'bulkStore']);
+            Route::post('/bulk-delete', [RedactionController::class, 'bulkDestroy']);
+        });
+
         // Comment routes nested under bundles
         Route::prefix('/{bundle}/comments')->group(function () {
             // Get all comments for a bundle
@@ -95,6 +104,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/{document}/highlights', [HighlightController::class, 'clearDocument']);
         Route::delete('/{document}/pages/{page}/highlights', [HighlightController::class, 'clearPage']);
 
+        // Redaction routes for specific document
+        Route::get('/{document}/redactions', [RedactionController::class, 'getByDocument']);
+        Route::delete('/{document}/redactions', [RedactionController::class, 'clearDocument']);
+        Route::delete('/{document}/pages/{page}/redactions', [RedactionController::class, 'clearPage']);
+
         // Comment routes for specific document
         Route::get('/{document}/comments', [CommentController::class, 'getByDocument']);
         Route::delete('/{document}/comments', [CommentController::class, 'clearDocument']);
@@ -109,6 +123,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{highlight}', [HighlightController::class, 'show']);
         Route::put('/{highlight}', [HighlightController::class, 'update']);
         Route::delete('/{highlight}', [HighlightController::class, 'destroy']);
+    });
+
+    // Individual redaction operations
+    Route::prefix('/redactions')->group(function () {
+        Route::get('/{redaction}', [RedactionController::class, 'show']);
+        Route::put('/{redaction}', [RedactionController::class, 'update']);
+        Route::delete('/{redaction}', [RedactionController::class, 'destroy']);
     });
 
     // Individual comment operations

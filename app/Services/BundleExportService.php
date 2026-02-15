@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Bundle;
 use App\Models\Document;
 use App\Models\Highlight;
+use App\Models\Redaction;
 use App\Models\CoverPage;
 use setasign\Fpdi\Tcpdf\Fpdi;
 use Illuminate\Support\Facades\Storage;
@@ -142,6 +143,18 @@ class BundleExportService
                 // CRITICAL FIX: After using setPage() in highlights, TCPDF's internal state
                 // needs to be reset so that AddPage() will add at the END, not at current position
                 // This ensures the back cover is added as the last page
+                $pdf->lastPage();
+            }
+
+            // STEP 6b: Add redactions (drawn after highlights)
+            // Get redactions from database
+            $redactions = $this->getRedactionsGrouped($bundle);
+
+            // Add redactions if available, offset by front cover page count
+            if (!empty($redactions)) {
+                $this->addRedactions($pdf, $redactions, $filePageMapping, $frontCoverPageCount);
+
+                // Reset page pointer after setPage() calls
                 $pdf->lastPage();
             }
 
@@ -311,6 +324,72 @@ class BundleExportService
         Log::info('Highlights grouped', [
             'total_highlights' => $highlights->count(),
             'valid_highlights' => array_sum(array_map(function ($doc) {
+                return array_sum(array_map('count', $doc));
+            }, $grouped))
+        ]);
+
+        return $grouped;
+    }
+
+    /**
+     * Get redactions grouped by document and page
+     */
+    private function getRedactionsGrouped(Bundle $bundle): array
+    {
+        $redactions = Redaction::where('bundle_id', $bundle->id)->get();
+
+        $grouped = [];
+
+        foreach ($redactions as $redaction) {
+            $documentId = $redaction->document_id;
+            $pageNumber = $redaction->page_number;
+
+            // Get coordinates directly from columns
+            $x = $redaction->x ?? 0;
+            $y = $redaction->y ?? 0;
+            $width = $redaction->width ?? 0;
+            $height = $redaction->height ?? 0;
+
+            // Skip redactions with invalid coordinates
+            if ($width <= 0 || $height <= 0) {
+                Log::warning('Skipping redaction with invalid dimensions', [
+                    'redaction_id' => $redaction->id,
+                    'x' => $x,
+                    'y' => $y,
+                    'width' => $width,
+                    'height' => $height
+                ]);
+                continue;
+            }
+
+            $fillHex = $redaction->fill_hex ?? '#000000';
+            $borderHex = $redaction->border_hex ?? '#000000';
+            $opacity = $redaction->opacity ?? 1;
+            $borderWidth = $redaction->border_width ?? 0;
+
+            if (!isset($grouped[$documentId])) {
+                $grouped[$documentId] = [];
+            }
+
+            if (!isset($grouped[$documentId][$pageNumber])) {
+                $grouped[$documentId][$pageNumber] = [];
+            }
+
+            $grouped[$documentId][$pageNumber][] = [
+                'x' => $x,
+                'y' => $y,
+                'width' => $width,
+                'height' => $height,
+                'fill' => $fillHex,
+                'opacity' => $opacity,
+                'border' => $borderHex,
+                'border_width' => $borderWidth,
+            ];
+        }
+
+        Log::info('Redactions grouped', [
+            'total_redactions' => $redactions->count(),
+            'valid_redactions' => array_sum(array_map(function ($doc) {
                 return array_sum(array_map('count', $doc));
             }, $grouped))
         ]);
@@ -704,6 +783,108 @@ class BundleExportService
             Log::info('Highlights added successfully');
         } catch (\Throwable $e) {
             Log::warning('Failed to add highlights', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+        }
+    }
+
+    /**
+     * Add redactions to PDF
+     * FIXED: Offset page numbers by cover page count
+     */
+    private function addRedactions(
+        Fpdi $pdf,
+        array $redactions,
+        array $filePageMapping,
+        int $coverPageOffset = 0
+    ): void {
+        try {
+            Log::info('Adding redactions to PDF', [
+                'cover_offset' => $coverPageOffset
+            ]);
+
+            foreach ($redactions as $documentId => $documentRedactions) {
+
+                if (!isset($filePageMapping[$documentId])) {
+                    continue;
+                }
+
+                $mapping = $filePageMapping[$documentId];
+
+                foreach ($documentRedactions as $pageNum => $pageRedactions) {
+
+                    // Calculate global page number (merged PDF page index)
+                    // This already includes cover page offset from addDocumentPages
+                    $globalPage = $mapping['start'] + ($pageNum - 1);
+
+                    if ($globalPage < 1 || $globalPage > $pdf->getNumPages()) {
+                        continue;
+                    }
+
+                    // Move to correct page
+                    $pdf->setPage($globalPage);
+
+                    foreach ($pageRedactions as $redaction) {
+
+                        if (
+                            !isset(
+                                $redaction['x'],
+                                $redaction['y'],
+                                $redaction['width'],
+                                $redaction['height']
+                            )
+                        ) {
+                            continue;
+                        }
+
+                        $opacity = $redaction['opacity'] ?? 1;
+                        $borderWidth = $redaction['border_width'] ?? 0;
+
+                        // Parse colors
+                        $fillColor = $this->parseColor(
+                            $redaction['fill'] ?? '#000000'
+                        );
+                        $borderColor = $this->parseColor(
+                            $redaction['border'] ?? '#000000'
+                        );
+
+                        $pdf->SetFillColor($fillColor['r'], $fillColor['g'], $fillColor['b']);
+                        $pdf->SetDrawColor($borderColor['r'], $borderColor['g'], $borderColor['b']);
+                        $pdf->SetLineWidth($this->ptToMm((float) $borderWidth));
+
+                        // Apply opacity for redaction block
+                        $pdf->SetAlpha($opacity);
+
+                        $x = $this->ptToMm($redaction['x']);
+                        $y = $this->ptToMm($redaction['y']);
+                        $w = $this->ptToMm($redaction['width']);
+                        $h = $this->ptToMm($redaction['height']);
+
+                        $pageHeightMm = $pdf->getPageHeight();
+                        $convertedY = $pageHeightMm - $y - $h;
+
+                        // Draw border at full opacity (if any)
+                        if ($borderWidth > 0) {
+                            $pdf->SetAlpha(1);
+                            $pdf->Rect($x, $convertedY, $w, $h, 'D');
+                        }
+
+                        // Draw fill with configured opacity
+                        if ($opacity > 0) {
+                            $pdf->SetAlpha($opacity);
+                            $pdf->Rect($x, $convertedY, $w, $h, 'F');
+                        }
+                    }
+
+                    // Reset alpha
+                    $pdf->SetAlpha(1);
+                }
+            }
+
+            Log::info('Redactions added successfully');
+        } catch (\Throwable $e) {
+            Log::warning('Failed to add redactions', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
